@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # The engine dependency is the one that can break this extension: when
+  # upstream releases a new minor, Dependabot opens a range-bump PR and CI
+  # (lint, format, typecheck, unit fixtures) runs against the new engine on
+  # that PR. Breakage shows up as a red PR instead of a broken user session.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: "@zvec/zvec-grep"
+    versioning-strategy: increase
+
+  # Keep the pi core peer pins and actions versions current too.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

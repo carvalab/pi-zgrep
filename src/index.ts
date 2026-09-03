@@ -15,6 +15,9 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { existsSync, readFileSync } from "node:fs";
+import { findPackageJSON } from "node:module";
+import path from "node:path";
 import type { Readable } from "node:stream";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -35,6 +38,53 @@ const PROBE_TIMEOUT_MS = 10_000;
 
 const nonEmpty = (v: string | undefined): boolean =>
   typeof v === "string" && v.length > 0;
+
+// --- Local engine resolution (npm-12-safe: files, not scripts) --------------
+
+// The engine ships as a real dependency (@zvec/zvec-grep), so `pi install`
+// materializes it next to this extension with no lifecycle scripts involved —
+// npm 12 blocks dependency postinstalls by default (RFC 0054) and pi's
+// installer does not opt in. Upstream ships its native core the same community
+// way (@zvec/bindings-* as prebuilt optional deps), so a script-less install
+// yields a working engine.
+//
+// `findPackageJSON` (node ≥22.14; our engines floor is 22.18) locates the
+// package across `exports` maps and nested node_modules; the CLI entry comes
+// from its `bin` field. Any mismatch (upstream layout change, absent bin) →
+// null → PATH/global fallback; never a hard failure.
+export const resolveLocalZgCli = (fromDir: string): string | null => {
+  try {
+    const pkgPath = findPackageJSON(
+      "@zvec/zvec-grep",
+      path.join(fromDir, "index.ts")
+    );
+    if (!pkgPath) {
+      return null;
+    }
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+      bin?: Record<string, string> | string;
+    };
+    const rel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.zg;
+    if (!rel) {
+      return null;
+    }
+    const cli = path.join(path.dirname(pkgPath), rel);
+    return existsSync(cli) ? cli : null;
+  } catch {
+    return null;
+  }
+};
+
+// Memoized for resolveBin (called on every spawn). Caches misses too — a
+// dependency-less dev checkout (`pi -e .`) stays null for the session and
+// falls through to PATH / global-install.
+let localZgCliCache: string | null | undefined;
+const localZgCli = (): string | null => {
+  if (localZgCliCache === undefined) {
+    localZgCliCache = resolveLocalZgCli(import.meta.dirname);
+  }
+  return localZgCliCache;
+};
 
 // --- Guidance (opt-out via PI_ZG_GUIDANCE) ---------------------------------
 
@@ -151,19 +201,33 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
   // probeAndVersion uses runner.version?.() to skip the redundant
   // `--version` spawn (probe already paid for it).
   let versionLine: string | undefined;
+  // Resolution order: PI_ZG_BIN (explicit override) → the packaged engine
+  // dependency resolved from this package's node_modules → `zg` on PATH. If
+  // the local copy exists but is broken, probe fails and ensureBinary falls
+  // through to the global-install path; PI_ZG_BIN stays the manual escape
+  // hatch for that corner.
   const resolveBin = (): string =>
-    nonEmpty(opts.env?.PI_ZG_BIN) ? (opts.env?.PI_ZG_BIN as string) : "zg";
+    nonEmpty(opts.env?.PI_ZG_BIN)
+      ? (opts.env?.PI_ZG_BIN as string)
+      : (localZgCli() ?? "zg");
 
   const startProcess = (
     bin: string,
     args: string[],
     o?: { cwd?: string }
-  ): ChildProcess =>
-    spawn(bin, args, {
+  ): ChildProcess => {
+    // The local engine is a packaged JS entry — run it with the current node
+    // instead of relying on exec bits and shebangs. Global and PI_ZG_BIN bins
+    // stay direct spawns.
+    const [cmd, argv] = bin.endsWith(".js")
+      ? [process.execPath, [bin, ...args]]
+      : [bin, args];
+    return spawn(cmd, argv, {
       cwd: o?.cwd ?? opts.cwd,
       env: opts.env,
       shell: false,
     });
+  };
 
   const probe = async (): Promise<string | null> => {
     const bin = resolveBin();
@@ -680,6 +744,72 @@ const registerZgTool = (pi: ExtensionAPI): void => {
   });
 };
 
+// --- Session-start warmup ---------------------------------------------------
+
+// Structural slice of the pi ctx that event handlers receive, with the exact
+// signatures from ExtensionUIContext so the real ctx assigns cleanly.
+export interface WarmupUi {
+  notify: (message: string, type?: "info" | "warning" | "error") => void;
+  setStatus: (key: string, text: string | undefined) => void;
+}
+export interface WarmupCtx {
+  cwd: string;
+  ui: WarmupUi;
+}
+
+// Kick the ensure-chain in the background at session start so the first zg
+// query hits a ready index. Resource guarantees (user requirement: one build,
+// one server, nothing heavy on startup):
+//   - probe-only: binary missing → bail silently. No background npm install;
+//     that stays on first tool use, exactly as before.
+//   - one build per process: the per-cwd chainCache shares buildP, so a
+//     warmup racing the first tool call joins the same build.
+//   - one daemon: `zg server on` fires only after an in-session build (see
+//     ensureIndex), so on a warm repo the warmup spawns just probe + status
+//     and never stacks a second daemon over the previous session's detached
+//     one (it survives pi's exit and keeps watching).
+// ponytail: locks are per-process — two pi windows on the same cold repo can
+// race two `zg index` runs; upstream tolerates concurrent builds. Split a
+// cross-process lock only if that ever misbehaves.
+export const sessionWarmup = async (
+  ctx: WarmupCtx,
+  env: Record<string, string | undefined> = process.env
+): Promise<void> => {
+  const onProgress = (s: string): void => {
+    ctx.ui.setStatus("pi-zg", s.slice(0, 80));
+  };
+  const chain = getOrCreateZg({
+    cwd: ctx.cwd,
+    env,
+    makeRunner: (): Runner =>
+      makeRunner({ cwd: ctx.cwd, env, onUpdate: onProgress }),
+    onUpdate: onProgress,
+  });
+  try {
+    if (!(await chain.runner.probe())) {
+      return;
+    }
+    ctx.ui.setStatus("pi-zg", "checking index…");
+    const idx = await chain.zg.ensureIndex();
+    if (idx.error) {
+      ctx.ui.notify(`zg warmup: ${idx.error}`, "error");
+    }
+  } catch {
+    // Warmup must never break session start; the tool path surfaces real
+    // errors (install failures, PI_ZG_BIN misconfig) to the agent.
+  } finally {
+    ctx.ui.setStatus("pi-zg", undefined);
+  }
+};
+
+const registerSessionWarmup = (pi: ExtensionAPI): void => {
+  pi.on("session_start", (_event, ctx) => {
+    // Fire-and-forget: never block startup on an index build. Reload/resume
+    // re-runs it — two cheap spawns on a warm repo.
+    void sessionWarmup(ctx);
+  });
+};
+
 // --- Guidance event ---------------------------------------------------------
 
 const registerGuidance = (pi: ExtensionAPI): void => {
@@ -697,5 +827,6 @@ export default function piZgExtension(pi: ExtensionAPI): void {
   registerZgTool(pi);
   registerZgIndexCommand(pi);
   registerZgStatusCommand(pi);
+  registerSessionWarmup(pi);
   registerGuidance(pi);
 }

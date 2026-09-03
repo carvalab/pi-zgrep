@@ -8,8 +8,9 @@ BM25, hybrid, and ripgrep search with automatic indexing.
 
 The engine is [zvec-ai/zvec-grep](https://github.com/zvec-ai/zvec-grep)
 (npm `@zvec/zvec-grep`, binary `zg`). This package is an **integrator, not the
-engine** — it installs/probes `zg`, translates a tool call into `zg` argv,
-parses stdout back into a structured result.
+engine** — it ships `@zvec/zvec-grep` as a real npm dependency and resolves the
+binary (dependency → PATH → global install fallback), translates a tool call
+into `zg` argv, parses stdout back into a structured result.
 
 ## Philosophy
 
@@ -36,7 +37,8 @@ parses stdout back into a structured result.
 - **Current compat baseline: zg 0.2.1** (2026-09-01). Fixtures, arg-builder
   expectations, and the e2e notes in `test/e2e.test.ts` capture that version.
 - **Update procedure when upstream releases:**
-  1. `npm install -g @zvec/zvec-grep@latest` (or set `PI_ZG_BIN`).
+  1. `npm install -g @zvec/zvec-grep@latest` (or set `PI_ZG_BIN`), and bump
+     the `@zvec/zvec-grep` range in `package.json` in the same release.
   2. `npm run test:e2e` — unit fixtures pin old behavior, so also watch for
      new upstream flags/tools announced in the release notes or its MCP docs.
   3. If fixtures fail: re-capture per README §Fixtures, update the version
@@ -57,11 +59,19 @@ whenever fixtures/upstream versions change. The e2e suite exercises the real
 spawn path: index → semantic / fts / vector / hybrid / rg queries against
 `test/fixtures/sample-project/`.
 
+Upstream-version safety nets: Dependabot opens a range-bump PR when upstream
+releases outside `^0.2.1` (CI runs the fixture tripwires on that PR), and the
+weekly [canary](.github/workflows/canary.yml) overlays
+`@zvec/zvec-grep@latest` and runs unit + e2e, opening or closing a `canary`
+labeled issue on the result. Patch releases inside the range are caught by
+the canary, not Dependabot.
+
 ### Manual smoke (live pi run, log-checked)
 
 Interactive: `pi -e .` in this repo (or `pi install npm:pi-zgrep`), then run
-the tool and `/zg-status`. `PI_ZG_BIN` overrides binary lookup; the extension
-auto-installs `@zvec/zvec-grep` globally on first use.
+the tool and `/zg-status`. The engine resolves from the packaged dependency
+first; `PI_ZG_BIN` overrides binary lookup; without either (and without `zg`
+on PATH) the extension auto-installs `@zvec/zvec-grep` globally on first use.
 
 Non-interactive (what an agent should run — real model, real spawn path,
 session log to inspect):
@@ -118,10 +128,16 @@ environment `npm`, action `npm publish`. Package record bootstrapped locally
 The pi package catalog (https://pi.dev/packages) lists npm packages tagged
 `pi-package`. This repo already qualifies: the keyword is set, the `pi`
 manifest declares `pi.extensions`, and peerDeps match the documented core set
-(`@earendil-works/pi-coding-agent`, `typebox`, `"*"` ranges). No runtime
-`dependencies` — everything runs through the spawned `zg` binary, which the
-extension installs itself. Publishing a real version (tag `v*`) is all that
-remains: the 0.0.0 record on npm is the bootstrap placeholder and still
-carries the pre-rename repo URL (`carvalab/pi-zg`); the next publish from
-this repo fixes the URL and makes the listing real. Do not move runtime deps
-into `devDependencies` — pi installs packages with `--omit=dev`.
+(`@earendil-works/pi-coding-agent`, `typebox`, `"*"` ranges). The engine is a
+real `dependencies` entry — pi's installer runs plain `npm install`, so it
+lands at package-install time with zero lifecycle scripts. That is deliberate:
+npm 12 blocks dependency postinstalls by default (RFC 0054) and pi's installer
+doesn't opt in, so any install-script-based bootstrapping would silently
+never run. Upstream supports this: prebuilt `@zvec/bindings-*` platform
+packages arrive as optional deps, no build step. The runtime `npm -g` install
+survives only as a fallback for dev checkouts (`pi -e .`). Binary resolution
+order: `PI_ZG_BIN` → packaged dependency → PATH → global install. Do not move
+runtime deps into `devDependencies` — pi installs packages with `--omit=dev`.
+Publishing a real version (tag `v*`) is still pending: the 0.0.0 record on npm
+is the bootstrap placeholder and carries the pre-rename repo URL
+(`carvalab/pi-zg`); the next publish fixes the URL and makes the listing real.

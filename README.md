@@ -1,15 +1,33 @@
 # pi-zgrep
 
-zg semantic search for the pi coding agent. One tool, four routes (hybrid, BM25, vector, ripgrep), auto-indexed.
+Semantic code search for the [pi](https://github.com/earendil-works/pi-coding-agent) coding agent. One tool, four routes (hybrid, BM25, vector, ripgrep), auto-indexed.
 
 [![npm version](https://img.shields.io/npm/v/pi-zgrep)](https://www.npmjs.com/package/pi-zgrep)
 [![CI](https://img.shields.io/github/actions/workflow/status/carvalab/pi-zgrep/ci.yml)](https://github.com/carvalab/pi-zgrep/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/npm/l/pi-zgrep)](./LICENSE)
 [![Node >= 22.18](https://img.shields.io/node/v/pi-zgrep)](https://nodejs.org)
 
-## What is zg?
+## What your agent gets
 
-zg is [zvec-grep](https://github.com/zvec-ai/zvec-grep) (Apache-2.0), a local-first search engine that unifies ripgrep, BM25, and vector search with on-device embeddings. This package exposes it to pi as one tool. pi-zgrep is an integrator, not the engine: the heavy lifting happens in the upstream `zg` CLI (npm `@zvec/zvec-grep`).
+- It finds code by meaning. "Where do we parse the upstream output format?" works before anyone knows the symbol names, which is exactly an agent's situation in an unfamiliar repo.
+- No setup and no daemon babysitting. The search engine installs as a dependency, the index builds in the background at session start, and a daemon keeps it fresh.
+- Exact matching keeps an escape route: `mode=rg` passes the query to managed ripgrep and skips the index.
+
+This is what that looks like on this repository. The agent makes one tool call:
+
+```
+zg({ query: "where does the extension parse zg output into results", mode: "hybrid" })
+```
+
+and gets ranked `file:line` hits back (real output):
+
+```
+doc/specs/2026-09-02-pi-zg-extension.md:55-68    heading: Components
+doc/specs/2026-09-02-pi-zg-extension.md:69-76    heading: Data flow
+doc/plans/2026-09-02-pi-zg-extension.md:353-426  heading: Task 5: Output parser (src/parse.ts)
+```
+
+Nothing in that query is a literal identifier in the codebase. Ripgrep scores zero on questions like this one; see [Benchmarks](#benchmarks) for where the numbers live.
 
 ## Install
 
@@ -23,49 +41,57 @@ Try it without installing first:
 pi -e npm:pi-zgrep
 ```
 
-The extension auto-installs the `zg` engine globally on first use (`npm install -g @zvec/zvec-grep`, with a `bun add -g` fallback when npm is missing). If the install fails on a host without node-gyp, the extension retries once with `--ignore-scripts`; sharp ships a prebuilt binary in the tree so the retry is safe. Already have `zg`? Set `PI_ZG_BIN` to its path and the extension skips PATH lookup entirely.
+The engine, [zvec-grep](https://github.com/zvec-ai/zvec-grep) (Apache-2.0, npm `@zvec/zvec-grep`), ships as a regular npm dependency, so one install brings both. No lifecycle scripts run: npm 12 blocks dependency postinstalls by default, and upstream ships prebuilt native bindings as optional dependencies instead. At runtime the extension resolves the binary in order: `PI_ZG_BIN` (explicit override), the packaged dependency, `zg` on PATH, then a global install on first use (`npm install -g @zvec/zvec-grep`, `bun add -g` fallback, one `--ignore-scripts` retry). pi-zgrep itself is an integrator: the search logic lives upstream, and this package translates a pi tool call into `zg` argv and parses the output.
 
-## Agent-facing tools
-
-### `zg`
+## The `zg` tool
 
 Local-first semantic + BM25 + hybrid + ripgrep search over the current workspace.
 
-| Parameter  | Type                                  | Default    | Notes                                                                                          |
-|------------|---------------------------------------|------------|------------------------------------------------------------------------------------------------|
-| `query`    | string                                | (required) | Natural language, symbol, or regex (for `mode=rg`).                                            |
-| `mode`     | `hybrid` \| `fts` \| `vector` \| `rg` | `hybrid`   | Search route. `rg` skips the index entirely.                                                    |
-| `limit`    | number (1-50)                         | `10`       | Max results to return.                                                                         |
-| `glob`     | string                                |            | File filter, e.g. `*.ts`.                                                                      |
-| `type`     | string                                |            | File-type filter.                                                                              |
-| `refresh`  | `auto` \| `wait`                      | `auto`     | `wait` forces `--refresh wait` after editing a file in the same session.                       |
-| `preview`  | `short` \| `none`                     | `short`    | Include a one-line code preview per result.                                                    |
+| Parameter  | Type                                  | Default    | Notes                                                                    |
+|------------|---------------------------------------|------------|--------------------------------------------------------------------------|
+| `query`    | string                                | (required) | Natural language, symbol, or regex (for `mode=rg`).                      |
+| `mode`     | `hybrid` \| `fts` \| `vector` \| `rg` | `hybrid`   | Search route. `rg` skips the index entirely.                             |
+| `limit`    | number (1-50)                         | `10`       | Max results to return.                                                   |
+| `glob`     | string                                |            | File filter, e.g. `*.ts`.                                                |
+| `type`     | string                                |            | File-type filter.                                                        |
+| `refresh`  | `auto` \| `wait`                      | `auto`     | `wait` forces `--refresh wait` after editing a file in the same session. |
+| `preview`  | `short` \| `none`                     | `short`    | Include a one-line code preview per result.                              |
 
-Returns ranked `file:line` results in ripgrep-style format. Details carry parsed JSON for future TUI rendering.
+Results come back as ranked `file:line` lines. The tool result `details` carry the parsed JSON, kept for future TUI rendering.
 
 ## Commands
 
-- `/zg-index [args...]` is a pass-through to `zg index` (e.g. `--rebuild`). Progress streams in the status line; the handler notifies on start and finish.
-- `/zg-status` shows the resolved binary and version, index readiness and freshness, and the daemon pointer. Run this when something looks off; the output tells you whether the index is missing, possibly stale, or fresh.
+- `/zg-index [args...]` passes arguments through to `zg index` (for example `--rebuild`). Progress streams in the status line, and the handler notifies you when the build starts and finishes.
+- `/zg-status` shows the resolved binary and version, index readiness and freshness, and the daemon pointer. Run it when something looks off; the output tells you whether the index is missing, possibly stale, or fresh.
 
 ## How it behaves
 
-**Auto-index on first non-rg query.** The first `zg` call that needs the index runs `zg index` for you. Build progress streams in the tool output (the status line carries install progress and `/zg-index` instead); Esc aborts (the child receives SIGKILL); partial builds resume incrementally on the next attempt — a failed build in this session surfaces a memoized error on later calls, and you resume by starting a new session or running `/zg-index` (which bypasses the memo). `mode=rg` is the documented escape hatch when you want an indexless query.
+### The index is ready before the first question
 
-**Background daemon after the first build.** Once the first index build succeeds, the extension asks zg to start its background daemon (`zg server on`, loopback-only, detached). The daemon keeps the index fresh through a watcher and an hourly reconciliation pass and reuses the embedding model across runs. Set `PI_ZG_SERVER` to any non-empty value to opt out and manage the daemon yourself.
+When a session starts, the extension checks for the binary and, in the background, makes sure the index exists: a missing or stale index builds before you ask anything, with progress on the status line. On a warm repo this costs two cheap spawns (a version probe and a readiness check), and the daemon from your previous session is still running, so nothing new starts. Esc cannot abort a session-start build because it runs in the background; `/zg-index` is the manual control. On bare dev checkouts (`pi -e .` without `npm install`) the binary is not there yet, so startup does nothing and the first tool use installs it.
 
-**System-prompt nudge.** On every agent turn, the extension appends a short note telling the model to prefer `zg` over `grep`/`find`, with concrete mode guidance (`hybrid` for intent, `fts` for symbols, `vector` for paraphrases, `rg` for exact matches). The note also spells out when to fall back: zero results, a tool error, or a `possibly_stale` flag on content the agent just edited. Set `PI_ZG_GUIDANCE` to any non-empty value to disable the nudge.
+### The first query builds the index if it has to
+
+A `zg` call that needs the index and does not have one runs `zg index` for you. Build progress streams in the tool output, and Esc aborts the build (the child receives SIGKILL). Partial builds resume incrementally on the next attempt. A failed build surfaces a memoized error on later calls in the same session; start a new session or run `/zg-index`, which bypasses the memo. `mode=rg` queries skip the index entirely.
+
+### A daemon keeps the index fresh
+
+After the first successful build, the extension asks zg to start its background daemon (`zg server on`, loopback-only, detached). The daemon watches the workspace, reconciles the index hourly, and reuses the embedding model across runs. Set `PI_ZG_SERVER` to any non-empty value to opt out and manage the daemon yourself.
+
+### The agent is nudged toward the right route
+
+On every agent turn, the extension appends a short system-prompt note telling the model to prefer `zg` over `grep`/`find`, with mode guidance: `hybrid` for intent, `fts` for symbols, `vector` for paraphrases, `rg` for exact matches. It also says when to fall back: zero results, a tool error, or a `possibly_stale` flag on content the agent just edited. Set `PI_ZG_GUIDANCE` to any non-empty value to disable the nudge.
 
 ## Configuration
 
 All env vars are read from the pi process environment (set them before launching pi). The "any non-empty value" convention means setting `PI_ZG_AUTO_INSTALL=1` is the same as `PI_ZG_AUTO_INSTALL=please-stop`.
 
-| Variable              | Effect when set to any non-empty value                                                    |
-|-----------------------|-------------------------------------------------------------------------------------------|
-| `PI_ZG_BIN`           | Path to the `zg` binary. Skips PATH lookup. If set but the binary is not executable there, the extension errors out (no fallback). |
-| `PI_ZG_AUTO_INSTALL`  | Never auto-install. Error surfaces the exact manual command.                              |
-| `PI_ZG_GUIDANCE`      | Do not append the system-prompt nudge.                                                    |
-| `PI_ZG_SERVER`        | Do not start the zg daemon after the first build.                                         |
+| Variable              | Effect when set to any non-empty value                                                     |
+|-----------------------|---------------------------------------------------------------------------------------------|
+| `PI_ZG_BIN`           | Path to the `zg` binary. Skips packaged-dependency and PATH lookup. If set but the binary is not executable there, the extension errors out (no fallback). |
+| `PI_ZG_AUTO_INSTALL`  | Never auto-install. Error surfaces the exact manual command.                                |
+| `PI_ZG_GUIDANCE`      | Do not append the system-prompt nudge.                                                      |
+| `PI_ZG_SERVER`        | Do not start the zg daemon after the first build.                                           |
 
 ## Troubleshooting
 
@@ -75,7 +101,7 @@ All env vars are read from the pi process environment (set them before launching
 npm install -g @zvec/zvec-grep
 ```
 
-On hosts without node-gyp the first attempt can fail on sharp's optional postinstall. The extension retries once with `--ignore-scripts`; sharp ships a prebuilt binary so the retry works. If both attempts fail, the same manual command above always works.
+On hosts without node-gyp the first attempt can fail on sharp's optional postinstall. The extension retries once with `--ignore-scripts`; sharp ships a prebuilt binary so the retry works. If both attempts fail, the manual command above still works.
 
 **Offline first index.** The first `zg index` run downloads a local embedding model. If the download fails, the error surfaces verbatim in the tool output. Reconnect, or pre-stage the model cache, and retry.
 
@@ -83,28 +109,15 @@ On hosts without node-gyp the first attempt can fail on sharp's optional postins
 
 **Parse miss.** If upstream changes its output shape, the tool falls back to raw text passthrough prefixed with a hint to run `/zg-status` and file an issue at [carvalab/pi-zgrep](https://github.com/carvalab/pi-zgrep/issues). The fixtures under `test/fixtures/` are the compat tripwire for the parser.
 
-**Windows: not supported in 0.1.0.** The resolver spawns `zg` directly with `shell: false`, which cannot launch npm's `.cmd` shims. macOS and Linux only.
+**Windows: not supported in 0.2.0.** The resolver spawns `zg` directly with `shell: false`, which cannot launch npm's `.cmd` shims. macOS and Linux only.
 
 ## Benchmarks
 
-Query latency and answer quality against ripgrep and GNU grep on this
-repo's code (full method, environment, and second corpus in
-[doc/benchmark.md](doc/benchmark.md); AMD Ryzen 5 5600H, zg 0.2.1):
+The retrieval and answer-quality numbers that matter come from upstream's own benchmark suite, which is bigger and better instrumented than anything we would run here: agent-based A/B runs (zg on and off) with judge scoring on [SWE-QA-Bench](https://github.com/zvec-ai/zvec-grep/blob/main/benchmarks/swe-qa-bench/README.md) (code, Claude Opus 5) and [BrowseComp-Plus](https://github.com/zvec-ai/zvec-grep/blob/main/benchmarks/browse-comp-plus/README.md) (general text, Codex gpt-5.6-sol), plus real-repo case studies on Pylint, Matplotlib, and Django. Method, environments, and results: [upstream benchmark docs](https://github.com/zvec-ai/zvec-grep/blob/main/benchmarks/README.md).
 
-| tool | median query | p95 | natural-language questions answered (hit@3) |
-|---|---:|---:|---:|
-| zg hybrid | 410 ms | 431 ms | 5/5 |
-| zg fts | 408 ms | 432 ms | 5/5 |
-| ripgrep | 5 ms | 5 ms | 0/5 |
-| grep | 3 ms | 3 ms | 0/5 |
+As a local reference we also keep a small latency and hit-rate comparison of zg against ripgrep and GNU grep on this repo's own code. The method and the numbers live in [doc/benchmark.md](doc/benchmark.md); rerun it yourself with `./doc/bench.sh` (130-line script, no dependencies).
 
-rg and grep win raw speed by ~100x and are the right tool for exact
-symbols. They score zero on the question set because the questions don't
-contain the code's literal identifiers, which is the situation an agent
-is in before it knows a codebase. Cold index costs ~1.1 s once.
-Replicate: `./doc/bench.sh` (130-line script, no dependencies).
-
-## Out of scope in 0.1.0
+## Out of scope in 0.2.0
 
 No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rendering, no `@`-mention autocomplete, no bundled skills, no remote embeddings.
 

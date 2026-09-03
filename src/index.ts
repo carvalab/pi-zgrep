@@ -540,10 +540,33 @@ const ZgToolParams = Type.Object({
 
 // --- Commands ---------------------------------------------------------------
 
+// Palette hints for command arguments (pi filters by the typed prefix and
+// falls back to null when nothing matches). The /zg-index list is the common
+// `zg index` flags, not the full surface — the command stays passthrough.
+const ZG_SERVER_VERBS = ["on", "off", "status"];
+const ZG_INDEX_FLAGS = [
+  "--rebuild",
+  "--drop",
+  "--yes",
+  "--debug",
+  "--mode",
+  "--embedding",
+  "--glob",
+];
+const completeFrom =
+  (values: string[]) =>
+  (prefix: string): { value: string; label: string }[] | null => {
+    const items = values
+      .filter((v) => v.startsWith(prefix))
+      .map((v) => ({ label: v, value: v }));
+    return items.length > 0 ? items : null;
+  };
+
 const registerZgIndexCommand = (pi: ExtensionAPI): void => {
   pi.registerCommand("zg-index", {
     description:
       "Build or update the zg index for the current workspace. Forwards arguments to `zg index` (e.g. --rebuild, --drop --yes, --debug). For index status use /zg-status.",
+    getArgumentCompletions: completeFrom(ZG_INDEX_FLAGS),
     handler: async (args, ctx) => {
       const started = Date.now();
       ctx.ui.setStatus("pi-zg", "indexing…");
@@ -682,6 +705,7 @@ const registerZgServerCommand = (pi: ExtensionAPI): void => {
   pi.registerCommand("zg-server", {
     description:
       "Start, stop, or inspect the zg daemon: /zg-server on|off|status. The daemon usually starts by itself after the first index build; this is a manual override.",
+    getArgumentCompletions: completeFrom(ZG_SERVER_VERBS),
     handler: async (rawArgs, ctx) => {
       const verb = rawArgs?.trim().split(/\s+/u)[0] ?? "";
       if (verb !== "on" && verb !== "off" && verb !== "status") {

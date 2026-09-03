@@ -85,6 +85,25 @@ On hosts without node-gyp the first attempt can fail on sharp's optional postins
 
 **Windows: not supported in 0.1.0.** The resolver spawns `zg` directly with `shell: false`, which cannot launch npm's `.cmd` shims. macOS and Linux only.
 
+## Benchmarks
+
+Query latency and answer quality against ripgrep and GNU grep on this
+repo's code (full method, environment, and second corpus in
+[doc/benchmark.md](doc/benchmark.md); AMD Ryzen 5 5600H, zg 0.2.1):
+
+| tool | median query | p95 | natural-language questions answered (hit@3) |
+|---|---:|---:|---:|
+| zg hybrid | 410 ms | 431 ms | 5/5 |
+| zg fts | 408 ms | 432 ms | 5/5 |
+| ripgrep | 5 ms | 5 ms | 0/5 |
+| grep | 3 ms | 3 ms | 0/5 |
+
+rg and grep win raw speed by ~100x and are the right tool for exact
+symbols. They score zero on the question set because the questions don't
+contain the code's literal identifiers, which is the situation an agent
+is in before it knows a codebase. Cold index costs ~1.1 s once.
+Replicate: `./doc/bench.sh` (130-line script, no dependencies).
+
 ## Out of scope in 0.1.0
 
 No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rendering, no `@`-mention autocomplete, no bundled skills, no remote embeddings.

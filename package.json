@@ -1,0 +1,68 @@
+{
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "oxfmt": "^0.66.0",
+    "oxlint": "^1.81.0",
+    "typescript": "^5.5.0",
+    "ultracite": "^7.10.7"
+  },
+  "name": "pi-zg",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "lint": "oxlint src test --no-error-on-unmatched-pattern",
+    "format": "oxfmt src test --no-error-on-unmatched-pattern",
+    "format:check": "oxfmt --check src test --no-error-on-unmatched-pattern",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "test:e2e": "ZG_TEST_E2E=1 node --test \"test/*.test.ts\""
+  },
+  "type": "module",
+  "version": "0.1.0",
+  "description": "zg (zvec-grep) semantic search for the pi coding agent: one tool, semantic + BM25 + hybrid + ripgrep, auto-indexed.",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "zg",
+    "zvec-grep",
+    "ai-agents",
+    "bm25",
+    "cli",
+    "code-search",
+    "full-text-search",
+    "local-first",
+    "mcp",
+    "ripgrep",
+    "semantic-search",
+    "vector-search"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carvalab/pi-zg.git"
+  },
+  "bugs": {
+    "url": "https://github.com/carvalab/pi-zg/issues"
+  },
+  "homepage": "https://github.com/carvalab/pi-zg#readme",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+# Commit messages and release PR descriptions run through the humanizer skill per ~/.pi/agent/AGENTS.md.
+#
+# Releases publish via npm Trusted Publishing (OIDC) — no stored token.
+#
+# One-time bootstrap (npm OIDC cannot create a package record, npm/cli#8544):
+#   1. Publish the reservation/first version locally: `npm publish --access public`
+#      (a pi-zg@0.0.0 reservation may already exist).
+#   2. On npmjs.com open pi-zg → Publishing settings → add a Trusted Publisher:
+#      GitHub repo carvalab/pi-zg, workflow release.yml.
+# Every tagged release after that publishes from here, token-free.
+name: Release
+on:
+  push: { tags: ["v*"] }
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, registry-url: "https://registry.npmjs.org" }
+      - run: npm ci
+      - run: npm run lint && npm run typecheck && npm run test
+      - name: Verify tag matches package.json version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+      - name: Publish (skip when the version is already on npm)
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "pi-zgrep@$PKG_VERSION" version >/dev/null 2>&1; then
+            echo "pi-zgrep@$PKG_VERSION is already published, skipping"
+          else
+            npm publish --provenance
+          fi

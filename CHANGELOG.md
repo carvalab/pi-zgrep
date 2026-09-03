@@ -4,6 +4,14 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
+## [v0.3.0] - 2026-09-03
+
+- New `/zg-server` command: start, stop, or inspect the daemon (`on|off|status`) without leaving pi. The daemon still starts on its own, and session warmup now revives it if it died between sessions, so one daemon serves all sessions (upstream enforces a single instance per home). `/zg-status` shows its real state instead of telling you to go run `zg server status` yourself.
+- `/zg-index` no longer spawns doomed builds: flags pass straight through to `zg index`, a bare word forwards only when it is an existing workspace path, and anything else gets a usage line pointing at `/zg-status`.
+- `/zg-index` and `/zg-server` suggest their arguments in the command palette as you type.
+- The zg tool description now leads with "call this tool directly", states the index scope boundary (node_modules, .git, build outputs, and anything outside the workspace are not indexed), gives a concrete example per search mode, and lists all four legit reasons to fall back to grep.
+- AGENTS.md documents why the packaged engine outranks any global binary, and the daemon lifecycle.
+
 ## [v0.2.2] - 2026-09-03
 
 - npm metadata tune-up for the pi.dev package gallery and npm search: added the author field, broadened keywords (search, grep, hybrid-search, embeddings, rag, coding-agent), and sharpened the description so filters surface the package for the terms people actually type. No code changes.

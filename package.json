@@ -23,7 +23,7 @@
     "test:e2e": "ZG_TEST_E2E=1 node --test \"test/*.test.ts\""
   },
   "type": "module",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Semantic, BM25, hybrid, and grep search for the pi coding agent, powered by the zg (zvec-grep) engine. One tool, auto-indexed, local-first. A semantic upgrade over ripgrep for code questions.",
   "author": "carvalab",
   "keywords": [

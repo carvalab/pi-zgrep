@@ -4,6 +4,10 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
+## [v0.2.2] - 2026-09-03
+
+- npm metadata tune-up for the pi.dev package gallery and npm search: added the author field, broadened keywords (search, grep, hybrid-search, embeddings, rag, coding-agent), and sharpened the description so filters surface the package for the terms people actually type. No code changes.
+
 ## [v0.2.1] - 2026-09-03
 
 - The `zg` tool description and the session-start guidance now say outright that `zg` is a tool to call directly, not a binary to run from a shell. This fixes agents that ran `which zg`, saw it fail, and quietly fell back to grep instead of using the tool.

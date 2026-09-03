@@ -78,6 +78,16 @@ into `zg` argv, parses stdout back into a structured result.
   sessions and a dead one revives at session start instead of staying down
   until the next build. Manual override: `/zg-server on|off|status`.
   `PI_ZG_SERVER` (non-empty) disables all automatic starts.
+- **Known audit noise (2026-09-03):** installs surface high-severity npm
+  audit findings for `sharp <0.35.0` (libvips CVEs, GHSA-f88m-g3jw-g9cj),
+  inherited `@zvec/zvec-grep` → `@huggingface/transformers` → `sharp`. The
+  engine pins transformers 3.8.1 (`sharp ^0.34.1`), and even transformers
+  4.2.0 still pins `^0.34.x`, so no fixed chain exists yet. pi-zgrep only
+  runs text embeddings, so the vulnerable image-decode path is never
+  exercised. npm ignores `overrides` from dependencies, which means this
+  repo cannot fix it for users; the fix is upstream (transformers allowing
+  `sharp ^0.35`, then a zvec-grep bump and our range bump). Recheck on each
+  upstream update.
 
 ## How to check (verification ladder)
 

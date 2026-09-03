@@ -120,14 +120,20 @@ export const formatBinaryLine = (
 export const formatDaemonLine = (
   serverStatus: { code: number; stdout: string } | null
 ): string => {
+  const start = "start it with /zg-server on";
   if (!serverStatus || serverStatus.code !== 0) {
-    return "daemon: not ready — start it with 'zg server on'";
+    return `daemon: not ready — ${start}`;
   }
   const state =
     serverStatus.stdout.match(/^Server:\s*(?<state>.+)$/mu)?.groups?.state?.trim() ??
     "ready";
+  if (state !== "ready") {
+    // plain `zg server status` exits 0 even when stopped — the state text is
+    // the only signal.
+    return `daemon: ${state} — ${start}`;
+  }
   const pid = serverStatus.stdout.match(/^PID:\s*(?<pid>\d+)/mu)?.groups?.pid;
-  return `daemon: ${state}${pid ? ` (pid ${pid})` : ""} — manage with 'zg server on' / 'zg server off'`;
+  return `daemon: ready${pid ? ` (pid ${pid})` : ""} — stop it with /zg-server off`;
 };
 
 // --- Process helpers --------------------------------------------------------
@@ -669,6 +675,50 @@ const registerZgStatusCommand = (pi: ExtensionAPI): void => {
 
 // --- Tool registration ------------------------------------------------------
 
+// Manual daemon override. Upstream starts the server itself for agent users
+// (and our warmup starts it after the first build), so this is only needed to
+// stop it, or to start it without building an index first.
+const registerZgServerCommand = (pi: ExtensionAPI): void => {
+  pi.registerCommand("zg-server", {
+    description:
+      "Start, stop, or inspect the zg daemon: /zg-server on|off|status. The daemon usually starts by itself after the first index build; this is a manual override.",
+    handler: async (rawArgs, ctx) => {
+      const verb = rawArgs?.trim().split(/\s+/u)[0] ?? "";
+      if (verb !== "on" && verb !== "off" && verb !== "status") {
+        ctx.ui.notify("Usage: /zg-server [on|off|status]", "error");
+        return;
+      }
+      const runner = makeRunner({ cwd: ctx.cwd, env: process.env });
+      try {
+        const res = await runner.run(["server", verb]);
+        if (verb === "status") {
+          ctx.ui.notify(
+            formatDaemonLine({ code: res.code, stdout: res.stdout }),
+            "info"
+          );
+          return;
+        }
+        if (res.code === 0) {
+          ctx.ui.notify(`zg server ${verb}: done`, "info");
+          return;
+        }
+        const detail = [res.stdout.trim(), res.stderr.trim()]
+          .filter((s) => s.length > 0)
+          .join("\n");
+        ctx.ui.notify(
+          `zg server ${verb} failed (exit ${res.code})${detail ? `:\n${detail}` : ""}`,
+          "error"
+        );
+      } catch {
+        ctx.ui.notify(
+          "zg binary not found — it installs on next /zg-index or zg tool use",
+          "error"
+        );
+      }
+    },
+  });
+};
+
 const registerZgTool = (pi: ExtensionAPI): void => {
   pi.registerTool({
     description:
@@ -859,6 +909,7 @@ export default function piZgExtension(pi: ExtensionAPI): void {
   registerZgTool(pi);
   registerZgIndexCommand(pi);
   registerZgStatusCommand(pi);
+  registerZgServerCommand(pi);
   registerSessionWarmup(pi);
   registerGuidance(pi);
 }

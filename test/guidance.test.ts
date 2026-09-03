@@ -55,10 +55,17 @@ test("formatDaemonLine: ready probe renders state and pid", () => {
       code: 0,
       stdout: "Server: ready\nPID: 4012956\nURL: http://127.0.0.1:7999/mcp",
     }),
-    "daemon: ready (pid 4012956) — manage with 'zg server on' / 'zg server off'"
+    "daemon: ready (pid 4012956) — stop it with /zg-server off"
   );
 });
-test("formatDaemonLine: missing or failed probe degrades to not-ready hint", () => {
+test("formatDaemonLine: missing or failed probe degrades to start hint", () => {
   assert.match(formatDaemonLine(null), /not ready/u);
+  assert.match(formatDaemonLine(null), /\/zg-server on/u);
   assert.match(formatDaemonLine({ code: 1, stdout: "boom" }), /not ready/u);
+});
+test("formatDaemonLine: stopped daemon exits 0 but still gets a start hint", () => {
+  assert.equal(
+    formatDaemonLine({ code: 0, stdout: "Server: stopped" }),
+    "daemon: stopped — start it with /zg-server on"
+  );
 });

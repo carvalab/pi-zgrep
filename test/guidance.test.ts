@@ -15,6 +15,8 @@ test("guidance names the four routes and the fallback rule", () => {
   assert.match(t, /rg/u);
   assert.match(t, /zero results/u);
   assert.match(t, /possibly_stale/u);
+  // models must not probe for a CLI
+  assert.match(t, /no `zg` binary/u);
 });
 test("opt-out: any non-empty value disables, unset/empty enables", () => {
   assert.equal(shouldInjectGuidance({}), true);

@@ -90,7 +90,7 @@ const localZgCli = (): string | null => {
 
 export const guidanceText = (): string =>
   [
-    "Code/content search: prefer the `zg` tool before grep/find.",
+    "Code/content search: prefer the `zg` tool before grep/find. The `zg` tool is a function you call directly — there is no `zg` binary to run from a shell.",
     "- mode=hybrid (default) for intent or natural-language questions; mode=fts for known symbols/identifiers; mode=vector for paraphrases; mode=rg for exact literal/regex.",
     "- Fall back to grep/find only when (1) zg returns zero results, (2) the zg tool errors, or (3) results report possibly_stale for content just edited this session.",
   ].join("\n");
@@ -640,7 +640,7 @@ const registerZgStatusCommand = (pi: ExtensionAPI): void => {
 const registerZgTool = (pi: ExtensionAPI): void => {
   pi.registerTool({
     description:
-      "Local-first semantic + BM25 + hybrid + ripgrep search over this workspace. PREFER zg over grep/find for code and content search; use mode=rg for exact matches zg misses.",
+      "Workspace code/content search (provided by the pi-zgrep extension). Call this tool directly — do NOT shell out to a `zg` binary, there is no CLI to invoke from a tool call. Uses semantic + BM25 + hybrid + ripgrep locally. Prefer over grep/rg/find for code questions; fall back to a bash grep only when this returns zero results or errors.",
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // pi's ToolExecutionComponent reads `result.content` unguarded on every
       // update (for image-block extraction), so partial payloads MUST include

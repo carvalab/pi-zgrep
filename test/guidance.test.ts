@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   formatBinaryLine,
+  formatDaemonLine,
   guidanceText,
   shouldInjectGuidance,
 } from "../src/index.ts";
@@ -47,4 +48,17 @@ test("formatBinaryLine: null version falls back to not-found line", () => {
     formatBinaryLine("/usr/bin/zg", null),
     "binary: not found (install on next zg tool use)"
   );
+});
+test("formatDaemonLine: ready probe renders state and pid", () => {
+  assert.equal(
+    formatDaemonLine({
+      code: 0,
+      stdout: "Server: ready\nPID: 4012956\nURL: http://127.0.0.1:7999/mcp",
+    }),
+    "daemon: ready (pid 4012956) — manage with 'zg server on' / 'zg server off'"
+  );
+});
+test("formatDaemonLine: missing or failed probe degrades to not-ready hint", () => {
+  assert.match(formatDaemonLine(null), /not ready/u);
+  assert.match(formatDaemonLine({ code: 1, stdout: "boom" }), /not ready/u);
 });

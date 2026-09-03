@@ -143,6 +143,4 @@ packages arrive as optional deps, no build step. The runtime `npm -g` install
 survives only as a fallback for dev checkouts (`pi -e .`). Binary resolution
 order: `PI_ZG_BIN` → packaged dependency → PATH → global install. Do not move
 runtime deps into `devDependencies` — pi installs packages with `--omit=dev`.
-Publishing a real version (tag `v*`) is still pending: the 0.0.0 record on npm
-is the bootstrap placeholder and carries the pre-rename repo URL
-(`carvalab/pi-zg`); the next publish fixes the URL and makes the listing real.
+Publishing a real version (tag `v*`) is done (0.1.0 onward, repo URL fixed), but as of 2026-09-03 the package is still **absent from the pi.dev gallery** despite the `pi-package` keyword (verified 0 results for `?name=pi-zgrep`; the gallery's filter indexes name, description, author, and npm keywords). The gallery demonstrably skips many qualifiers (5459 listed vs ~9000 `pi-package` packages on npm); cause of exclusion is not externally visible. If still absent after 24-48h from the 0.2.2 metadata/republish, use the report link on any gallery card or open an issue on earendil-works/pi. 0.0.0 remains the bootstrap placeholder name-unrelated; do not delete the npm record.

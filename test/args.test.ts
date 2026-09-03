@@ -6,6 +6,7 @@ import {
   buildQueryArgs,
   buildIndexArgs,
   buildStatusArgs,
+  parseIndexCommandArgs,
   validateQueryInput,
 } from "../src/args.ts";
 
@@ -258,4 +259,24 @@ test("rg route emits bare query when query does not start with -", () => {
     }),
     ["query", "--rg", "loadTheme", "--limit", "1"]
   );
+});
+
+test("parseIndexCommandArgs forwards flags untouched", () => {
+  assert.deepEqual(parseIndexCommandArgs("--rebuild --debug"), {
+    args: ["--rebuild", "--debug"],
+    ok: true,
+  });
+});
+test("parseIndexCommandArgs forwards a bare word only when it exists on disk", () => {
+  assert.deepEqual(
+    parseIndexCommandArgs("/tmp --rebuild", (p) => p === "/tmp"),
+    { args: ["/tmp", "--rebuild"], ok: true }
+  );
+  assert.deepEqual(parseIndexCommandArgs("status", () => false), {
+    ok: false,
+  });
+});
+test("parseIndexCommandArgs empty or blank input is ok with no args", () => {
+  assert.deepEqual(parseIndexCommandArgs(), { args: [], ok: true });
+  assert.deepEqual(parseIndexCommandArgs("   "), { args: [], ok: true });
 });

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 export type QueryMode = "hybrid" | "fts" | "vector" | "rg";
 export interface QueryInput {
   query: string;
@@ -97,3 +99,23 @@ export const buildIndexArgs = (extra: string[] = []): string[] => [
   ...extra,
 ];
 export const buildStatusArgs = (): string[] => ["status", "--check-ready"];
+
+export type IndexCommandArgs = { args: string[]; ok: true } | { ok: false };
+
+// /zg-index argument guard. Flags pass through untouched (thin integrator —
+// upstream can add flags without changes here). A bare word is forwarded only
+// when it exists on disk (upstream's optional positional [root]); anything
+// else is a typo like "status" that upstream kills with [ROOT_NOT_FOUND] —
+// reject it with a usage hint instead of a doomed spawn. `exists` is
+// injectable for tests.
+export const parseIndexCommandArgs = (
+  raw?: string,
+  exists: (p: string) => boolean = existsSync
+): IndexCommandArgs => {
+  const args = raw ? raw.split(/\s+/u).filter((s) => s.length > 0) : [];
+  const bare = args.filter((s) => !s.startsWith("-"));
+  if (bare.some((s) => !exists(s))) {
+    return { ok: false };
+  }
+  return { args, ok: true };
+};

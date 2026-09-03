@@ -27,6 +27,7 @@ import {
   buildIndexArgs,
   buildQueryArgs,
   buildStatusArgs,
+  parseIndexCommandArgs,
   validateQueryInput,
 } from "./args.ts";
 import { parseQueryOutput, parseStatusOutput, renderResults } from "./parse.ts";
@@ -92,7 +93,7 @@ export const guidanceText = (): string =>
   [
     "Code/content search: prefer the `zg` tool before grep/find. The `zg` tool is a function you call directly — there is no `zg` binary to run from a shell.",
     "- mode=hybrid (default) for intent or natural-language questions; mode=fts for known symbols/identifiers; mode=vector for paraphrases; mode=rg for exact literal/regex.",
-    "- Fall back to grep/find only when (1) zg returns zero results, (2) the zg tool errors, or (3) results report possibly_stale for content just edited this session.",
+    "- Fall back to grep/find only when (1) zg returns zero results, (2) the zg tool errors, (3) results report possibly_stale for content just edited this session, or (4) the target is outside the indexed workspace.",
   ].join("\n");
 
 export const shouldInjectGuidance = (
@@ -111,6 +112,22 @@ export const formatBinaryLine = (
     return "binary: not found (install on next zg tool use)";
   }
   return `binary: ${bin} (${versionFirstLine})`;
+};
+
+// `/zg-status` daemon line. `serverStatus` is the buffered `zg server status`
+// spawn (null when the spawn itself failed). zg owns the daemon lifecycle;
+// this only surfaces its state and degrades to a start hint.
+export const formatDaemonLine = (
+  serverStatus: { code: number; stdout: string } | null
+): string => {
+  if (!serverStatus || serverStatus.code !== 0) {
+    return "daemon: not ready — start it with 'zg server on'";
+  }
+  const state =
+    serverStatus.stdout.match(/^Server:\s*(?<state>.+)$/mu)?.groups?.state?.trim() ??
+    "ready";
+  const pid = serverStatus.stdout.match(/^PID:\s*(?<pid>\d+)/mu)?.groups?.pid;
+  return `daemon: ${state}${pid ? ` (pid ${pid})` : ""} — manage with 'zg server on' / 'zg server off'`;
 };
 
 // --- Process helpers --------------------------------------------------------
@@ -519,7 +536,8 @@ const ZgToolParams = Type.Object({
 
 const registerZgIndexCommand = (pi: ExtensionAPI): void => {
   pi.registerCommand("zg-index", {
-    description: "Build or update the zg index for the current workspace",
+    description:
+      "Build or update the zg index for the current workspace. Forwards arguments to `zg index` (e.g. --rebuild, --drop --yes, --debug). For index status use /zg-status.",
     handler: async (args, ctx) => {
       const started = Date.now();
       ctx.ui.setStatus("pi-zg", "indexing…");
@@ -527,8 +545,18 @@ const registerZgIndexCommand = (pi: ExtensionAPI): void => {
       // F6: the runner-level onUpdate wrapper was dead here — /zg-index
       // never installs, so opts.onUpdate is never invoked. Fold setStatus
       // into streamOnUpdate so each build-progress line surfaces live.
+      const parsed = parseIndexCommandArgs(args);
+      if (!parsed.ok) {
+        // Don't spawn a doomed build: bare words that aren't existing paths
+        // (e.g. "status") die upstream as [ROOT_NOT_FOUND] with exit 1.
+        ctx.ui.notify(
+          "Usage: /zg-index [--rebuild | --drop --yes | <zg index flags> | <workspace path>]. For index status use /zg-status (or run `zg status` in bash).",
+          "error"
+        );
+        return;
+      }
       const runner = makeRunner({ cwd: ctx.cwd, env: process.env });
-      const extra = args ? args.split(/\s+/u).filter((s) => s.length > 0) : [];
+      const extra = parsed.args;
 
       // ponytail: /zg-index builds are unabortable and unlocked (command
       // ctx.signal is undefined while idle; two concurrent runs race) —
@@ -627,9 +655,13 @@ const registerZgStatusCommand = (pi: ExtensionAPI): void => {
       if (res.stderr.trim().length > 0) {
         lines.push(res.stderr.trim());
       }
-      lines.push(
-        "daemon: run 'zg server status' — pi-zg leaves daemon management to zg"
-      );
+      let daemonStatus: RunResult | null = null;
+      try {
+        daemonStatus = await runner.run(["server", "status"]);
+      } catch {
+        // daemon probe is best-effort; formatDaemonLine degrades to a hint.
+      }
+      lines.push(formatDaemonLine(daemonStatus));
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });
@@ -640,7 +672,7 @@ const registerZgStatusCommand = (pi: ExtensionAPI): void => {
 const registerZgTool = (pi: ExtensionAPI): void => {
   pi.registerTool({
     description:
-      "Workspace code/content search (provided by the pi-zgrep extension). Call this tool directly — do NOT shell out to a `zg` binary, there is no CLI to invoke from a tool call. Uses semantic + BM25 + hybrid + ripgrep locally. Prefer over grep/rg/find for code questions; fall back to a bash grep only when this returns zero results or errors.",
+      "Workspace code/content search. Call this tool directly — there is no `zg` binary to shell out to. USE THIS FIRST for code/content questions, before grep/find. Local-first semantic + BM25 + hybrid + ripgrep over the current workspace; excludes node_modules/, .git/, and build outputs; anything outside the workspace is NOT indexed — grep directly for those. Modes: hybrid (default) natural-language intent (\"where are auth tokens read?\"); fts exact symbols (\"PackageUpdate\"); vector paraphrases; rg literal/regex (\"^export function check\") only when fts misses. Fall back to bash grep only when: (1) zero results though the term must exist, (2) this tool errors, (3) result says possibly_stale after you edited it this session, (4) the target is outside the indexed workspace. Don't default to bash grep out of habit: a 2s zg call beats a 30s grep reflex.",
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // pi's ToolExecutionComponent reads `result.content` unguarded on every
       // update (for image-block extraction), so partial payloads MUST include

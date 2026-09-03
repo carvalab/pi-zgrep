@@ -36,6 +36,13 @@ into `zg` argv, parses stdout back into a structured result.
   historically every 1–2 weeks).
 - **Current compat baseline: zg 0.2.1** (2026-09-01). Fixtures, arg-builder
   expectations, and the e2e notes in `test/e2e.test.ts` capture that version.
+- **Packaged dependency wins over PATH, on purpose.** Resolution order is
+  `PI_ZG_BIN` → packaged `@zvec/zvec-grep` → `zg` on PATH → global install.
+  Fixtures and the parser are pinned to the packaged version, so a global
+  binary at a different version would trade tested output shapes for untested
+  ones, and the packaged dependency upgrades on our cadence (Dependabot plus
+  our release), not the user's. Don't weaken this order; when output shapes
+  drift, re-capture fixtures per the update procedure below.
 - **Update procedure when upstream releases:**
   1. `npm install -g @zvec/zvec-grep@latest` (or set `PI_ZG_BIN`), and bump
      the `@zvec/zvec-grep` range in `package.json` in the same release.
@@ -43,6 +50,12 @@ into `zg` argv, parses stdout back into a structured result.
      new upstream flags/tools announced in the release notes or its MCP docs.
   3. If fixtures fail: re-capture per README §Fixtures, update the version
      notes in `test/e2e.test.ts`, bump this package's version, release.
+- **Daemon lifecycle (upstream docs/06-server.md):** session warmup attempts
+  `zg server on` once per session (idempotent; upstream enforces a single
+  instance per home via the fixed listen port), so one daemon serves all
+  sessions and a dead one revives at session start instead of staying down
+  until the next build. Manual override: `/zg-server on|off|status`.
+  `PI_ZG_SERVER` (non-empty) disables all automatic starts.
 
 ## How to check (verification ladder)
 

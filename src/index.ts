@@ -846,10 +846,10 @@ export interface WarmupCtx {
 //     that stays on first tool use, exactly as before.
 //   - one build per process: the per-cwd chainCache shares buildP, so a
 //     warmup racing the first tool call joins the same build.
-//   - one daemon: `zg server on` fires only after an in-session build (see
-//     ensureIndex), so on a warm repo the warmup spawns just probe + status
-//     and never stacks a second daemon over the previous session's detached
-//     one (it survives pi's exit and keeps watching).
+//   - one daemon: every session attempts `zg server on` once (idempotent;
+//     upstream enforces a single instance per home via the fixed port), so
+//     a daemon from a previous session is reused and a dead one revives at
+//     startup instead of staying down until the next build.
 // ponytail: locks are per-process — two pi windows on the same cold repo can
 // race two `zg index` runs; upstream tolerates concurrent builds. Split a
 // cross-process lock only if that ever misbehaves.
@@ -871,6 +871,11 @@ export const sessionWarmup = async (
     if (!(await chain.runner.probe())) {
       return;
     }
+    // Upstream agent guidance (docs/06-server.md): the daemon should simply
+    // be running — background refresh and embedding-model reuse span
+    // sessions. zg enforces a single instance per home (fixed listen port),
+    // so this can never stack a second daemon over a previous session's.
+    chain.zg.startServerOnce();
     ctx.ui.setStatus("pi-zg", "checking index…");
     const idx = await chain.zg.ensureIndex();
     if (idx.error) {

@@ -68,6 +68,7 @@ test("warmup with ready index: probes + status-checks, no build, clears status",
     );
     assert.ok(argv0.has("--version"), "probe must run zg --version");
     assert.ok(argv0.has("status"), "ensureIndex must run zg status");
+    assert.ok(argv0.has("server"), "warmup must attempt the daemon start");
     assert.ok(!argv0.has("index"), "ready index must not trigger a build");
     assert.equal(calls.filter((c) => c.startsWith("notify:")).length, 0);
     assert.equal(calls.at(-1), "status:cleared");

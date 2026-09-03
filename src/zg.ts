@@ -205,6 +205,18 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     }
   };
 
+  // Daemon start, at most once per chain (session + root). `zg server on` is
+  // idempotent (prints ready, same pid) and upstream enforces one instance
+  // per home via the fixed listen port, so attempts from other sessions are
+  // harmless no-ops.
+  const startServerOnce = (): void => {
+    if (serverStarted || nonEmpty(opts.env?.PI_ZG_SERVER)) {
+      return;
+    }
+    serverStarted = true;
+    void startServerFireAndForget();
+  };
+
   const ensureIndex = async (): Promise<{ error?: string }> => {
     const st = runner.probeStatus
       ? await runner.probeStatus()
@@ -240,10 +252,7 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     buildP = (async (): Promise<unknown> => {
       try {
         await runBuild();
-        if (!serverStarted && !nonEmpty(opts.env?.PI_ZG_SERVER)) {
-          serverStarted = true;
-          void startServerFireAndForget();
-        }
+        startServerOnce();
       } catch (error) {
         failedRoots.add(opts.root);
         throw error;
@@ -260,5 +269,5 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     return {};
   };
 
-  return { ensureBinary, ensureIndex };
+  return { ensureBinary, ensureIndex, startServerOnce };
 };

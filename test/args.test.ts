@@ -272,9 +272,12 @@ test("parseIndexCommandArgs forwards a bare word only when it exists on disk", (
     parseIndexCommandArgs("/tmp --rebuild", (p) => p === "/tmp"),
     { args: ["/tmp", "--rebuild"], ok: true }
   );
-  assert.deepEqual(parseIndexCommandArgs("status", () => false), {
-    ok: false,
-  });
+  assert.deepEqual(
+    parseIndexCommandArgs("status", () => false),
+    {
+      ok: false,
+    }
+  );
 });
 test("parseIndexCommandArgs empty or blank input is ok with no args", () => {
   assert.deepEqual(parseIndexCommandArgs(), { args: [], ok: true });

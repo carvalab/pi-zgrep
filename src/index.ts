@@ -125,8 +125,9 @@ export const formatDaemonLine = (
     return `daemon: not ready — ${start}`;
   }
   const state =
-    serverStatus.stdout.match(/^Server:\s*(?<state>.+)$/mu)?.groups?.state?.trim() ??
-    "ready";
+    serverStatus.stdout
+      .match(/^Server:\s*(?<state>.+)$/mu)
+      ?.groups?.state?.trim() ?? "ready";
   if (state !== "ready") {
     // plain `zg server status` exits 0 even when stopped — the state text is
     // the only signal.
@@ -746,7 +747,7 @@ const registerZgServerCommand = (pi: ExtensionAPI): void => {
 const registerZgTool = (pi: ExtensionAPI): void => {
   pi.registerTool({
     description:
-      "Workspace code/content search. Call this tool directly — there is no `zg` binary to shell out to. USE THIS FIRST for code/content questions, before grep/find. Local-first semantic + BM25 + hybrid + ripgrep over the current workspace; excludes node_modules/, .git/, and build outputs; anything outside the workspace is NOT indexed — grep directly for those. Modes: hybrid (default) natural-language intent (\"where are auth tokens read?\"); fts exact symbols (\"PackageUpdate\"); vector paraphrases; rg literal/regex (\"^export function check\") only when fts misses. Fall back to bash grep only when: (1) zero results though the term must exist, (2) this tool errors, (3) result says possibly_stale after you edited it this session, (4) the target is outside the indexed workspace. Don't default to bash grep out of habit: a 2s zg call beats a 30s grep reflex.",
+      'Workspace code/content search. Call this tool directly — there is no `zg` binary to shell out to. USE THIS FIRST for code/content questions, before grep/find. Local-first semantic + BM25 + hybrid + ripgrep over the current workspace; excludes node_modules/, .git/, and build outputs; anything outside the workspace is NOT indexed — grep directly for those. Modes: hybrid (default) natural-language intent ("where are auth tokens read?"); fts exact symbols ("PackageUpdate"); vector paraphrases; rg literal/regex ("^export function check") only when fts misses. Fall back to bash grep only when: (1) zero results though the term must exist, (2) this tool errors, (3) result says possibly_stale after you edited it this session, (4) the target is outside the indexed workspace. Don\'t default to bash grep out of habit: a 2s zg call beats a 30s grep reflex.',
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // pi's ToolExecutionComponent reads `result.content` unguarded on every
       // update (for image-block extraction), so partial payloads MUST include

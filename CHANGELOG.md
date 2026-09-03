@@ -4,6 +4,11 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
+## [v0.2.1] - 2026-09-03
+
+- The `zg` tool description and the session-start guidance now say outright that `zg` is a tool to call directly, not a binary to run from a shell. This fixes agents that ran `which zg`, saw it fail, and quietly fell back to grep instead of using the tool.
+- A regression test pins the no-binary wording in the guidance text so a future reword can't drop it.
+
 ## [v0.2.0] - 2026-09-03
 
 - The zg engine now installs as a regular npm dependency: `pi install npm:pi-zgrep` brings everything with it, no lifecycle scripts involved, safe under npm 12's default script blocking.

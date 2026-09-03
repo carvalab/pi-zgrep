@@ -3,6 +3,10 @@ import { test } from "node:test";
 
 import { createZg } from "../src/zg.ts";
 import type { Runner } from "../src/zg.ts";
+// getOrCreateZg + resetZgCache exported from src/zg.ts. F2: parallel
+// tool calls on the same root must share one ensure-chain instance
+// (installP / buildP / failedRoots), so makeRunner+createZg per
+// execute doesn't break the memoized-error / lock guarantees.
 
 const fakeRunner = (
   over: Partial<Runner> = {}
@@ -250,6 +254,27 @@ test("install runs but zg still missing afterwards => still not on PATH error", 
   await assert.rejects(zg.ensureBinary(), /still not on PATH/u);
 });
 
+// F7: when runner exposes a `version()` cache, probeAndVersion uses
+// it and skips the redundant `zg --version` spawn. The fakeRunner
+// counts --version calls into the shared `calls` array; with the
+// cache in play, --version never appears in calls after probe().
+test("probeAndVersion uses cached version line; no second --version spawn", async () => {
+  const r = fakeRunner({
+    // version() simulates the makeRunner closure cache populated by
+    // probe's stdout drain.
+    version: (): string | undefined => "zg 0.2.1",
+  });
+  const res = await createZg(r, { root: "/x" }).ensureBinary();
+  assert.equal(res.bin, "/usr/bin/zg");
+  assert.equal(res.warning, undefined, "0.2.1 is not pre-1.0");
+  const versionCalls = r.calls.filter((c) => c[0] === "--version");
+  assert.equal(
+    versionCalls.length,
+    0,
+    `expected no --version spawn when cache is populated; got calls=${JSON.stringify(r.calls)}`
+  );
+});
+
 test("riders joining a failing build both get {error} and exactly one build runs", async () => {
   let builds = 0;
   const r = fakeRunner({
@@ -271,4 +296,77 @@ test("riders joining a failing build both get {error} and exactly one build runs
   assert.equal(builds, 1, "exactly one build despite parallel calls");
   assert.ok(r1.error, "rider 1 sees the error");
   assert.ok(r2.error, "rider 2 sees the error");
+});
+
+// F2: getOrCreateZg caches one ensure-chain per cwd so parallel tool
+// calls on the same root share install/build locks and the
+// failedRoots memo. Without the cache, each tool execute creates its
+// own createZg instance and the session-scoped promises reset every
+// call → install fires per call, build races per call, and the
+// README's "memoized error" claim is false.
+test("getOrCreateZg returns the same ensure chain for the same cwd", async () => {
+  const { getOrCreateZg, resetZgCache } = await import("../src/index.ts");
+  resetZgCache();
+  let probeCalls = 0;
+  let installCalls = 0;
+  const runner: Runner = {
+    install: (): Promise<void> => {
+      installCalls += 1;
+      return Promise.resolve();
+    },
+    // First probe returns null (binary missing); once install has
+    // been called the probe finds the binary on PATH. Same shape as
+    // the install-lock test in this file.
+    probe: (): Promise<string | null> => {
+      probeCalls += 1;
+      return Promise.resolve(installCalls > 0 ? "/usr/bin/zg" : null);
+    },
+    probeStatus: (): Promise<{
+      code: number;
+      stderr: string;
+      stdout: string;
+    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    run: (): Promise<{ code: number; stderr: string; stdout: string }> =>
+      Promise.resolve({ code: 0, stderr: "", stdout: "" }),
+    startServer: (): Promise<void> => Promise.resolve(),
+    stream: (): Promise<{ code: number }> => Promise.resolve({ code: 0 }),
+  };
+  const a = getOrCreateZg({
+    cwd: "/repo-x",
+    env: {},
+    makeRunner: () => runner,
+  });
+  const b = getOrCreateZg({
+    cwd: "/repo-x",
+    env: {},
+    makeRunner: () => runner,
+  });
+  assert.equal(a, b, "same cwd must return the same cached chain");
+  // Two calls into ensureBinary must yield one install even when the
+  // cache returns the same chain twice (this exercises installP).
+  await Promise.all([a.zg.ensureBinary(), b.zg.ensureBinary()]);
+  assert.equal(installCalls, 1, "install shared across cached callers");
+  // probe still gets called per-ensureBinary because makeRunner is
+  // wrapped at the factory layer — that's fine, the cache's purpose
+  // is to share the install promise, not the probe. Reset the cache
+  // so subsequent tests start clean.
+  resetZgCache();
+  assert.ok(probeCalls >= 2, "probe runs each call (cheap, no caching needed)");
+});
+
+test("getOrCreateZg returns distinct chains for distinct cwds", async () => {
+  const { getOrCreateZg, resetZgCache } = await import("../src/index.ts");
+  resetZgCache();
+  const a = getOrCreateZg({
+    cwd: "/repo-a",
+    env: {},
+    makeRunner: () => fakeRunner(),
+  });
+  const b = getOrCreateZg({
+    cwd: "/repo-b",
+    env: {},
+    makeRunner: () => fakeRunner(),
+  });
+  assert.notEqual(a, b, "different cwds get different chains");
+  resetZgCache();
 });

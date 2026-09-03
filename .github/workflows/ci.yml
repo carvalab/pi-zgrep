@@ -6,10 +6,17 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # F6: matrix matches the engines.node floor (22.18) and the version
+    # we develop against (24). Both must pass for the release gate.
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24", "26"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24 }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
       - run: npm ci
       - run: npm run lint
       - run: npm run format:check

@@ -1,26 +1,26 @@
-# pi-zg
+# pi-zgrep
 
 zg semantic search for the pi coding agent. One tool, four routes (hybrid, BM25, vector, ripgrep), auto-indexed.
 
-[![npm version](https://img.shields.io/npm/v/pi-zg)](https://www.npmjs.com/package/pi-zg)
-[![CI](https://img.shields.io/github/actions/workflow/status/carvalab/pi-zg/ci.yml)](https://github.com/carvalab/pi-zg/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/npm/l/pi-zg)](./LICENSE)
-[![Node >= 22.18](https://img.shields.io/node/v/pi-zg)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/pi-zgrep)](https://www.npmjs.com/package/pi-zgrep)
+[![CI](https://img.shields.io/github/actions/workflow/status/carvalab/pi-zgrep/ci.yml)](https://github.com/carvalab/pi-zgrep/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/npm/l/pi-zgrep)](./LICENSE)
+[![Node >= 22.18](https://img.shields.io/node/v/pi-zgrep)](https://nodejs.org)
 
 ## What is zg?
 
-zg is [zvec-grep](https://github.com/zvec-ai/zvec-grep) (Apache-2.0), a local-first search engine that unifies ripgrep, BM25, and vector search with on-device embeddings. This package exposes it to pi as one tool. pi-zg is an integrator, not the engine: the heavy lifting happens in the upstream `zg` CLI (npm `@zvec/zvec-grep`).
+zg is [zvec-grep](https://github.com/zvec-ai/zvec-grep) (Apache-2.0), a local-first search engine that unifies ripgrep, BM25, and vector search with on-device embeddings. This package exposes it to pi as one tool. pi-zgrep is an integrator, not the engine: the heavy lifting happens in the upstream `zg` CLI (npm `@zvec/zvec-grep`).
 
 ## Install
 
 ```bash
-pi install npm:pi-zg
+pi install npm:pi-zgrep
 ```
 
 Try it without installing first:
 
 ```bash
-pi -e npm:pi-zg
+pi -e npm:pi-zgrep
 ```
 
 The extension auto-installs the `zg` engine globally on first use (`npm install -g @zvec/zvec-grep`, with a `bun add -g` fallback when npm is missing). If the install fails on a host without node-gyp, the extension retries once with `--ignore-scripts`; sharp ships a prebuilt binary in the tree so the retry is safe. Already have `zg`? Set `PI_ZG_BIN` to its path and the extension skips PATH lookup entirely.
@@ -81,7 +81,7 @@ On hosts without node-gyp the first attempt can fail on sharp's optional postins
 
 **`mode=rg` works without an index.** Use it when the index is broken or you want to skip the build step entirely.
 
-**Parse miss.** If upstream changes its output shape, the tool falls back to raw text passthrough prefixed with a hint to run `/zg-status` and file an issue at [carvalab/pi-zg](https://github.com/carvalab/pi-zg/issues). The fixtures under `test/fixtures/` are the compat tripwire for the parser.
+**Parse miss.** If upstream changes its output shape, the tool falls back to raw text passthrough prefixed with a hint to run `/zg-status` and file an issue at [carvalab/pi-zgrep](https://github.com/carvalab/pi-zgrep/issues). The fixtures under `test/fixtures/` are the compat tripwire for the parser.
 
 **Windows: not supported in 0.1.0.** The resolver spawns `zg` directly with `shell: false`, which cannot launch npm's `.cmd` shims. macOS and Linux only.
 
@@ -92,8 +92,8 @@ No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rend
 ## Development
 
 ```bash
-git clone https://github.com/carvalab/pi-zg.git
-cd pi-zg
+git clone https://github.com/carvalab/pi-zgrep.git
+cd pi-zgrep
 npm install
 npm run test            # unit tests (parser, arg builder, ensure chain, guidance)
 ZG_TEST_E2E=1 npm run test:e2e   # real zg engine required on PATH

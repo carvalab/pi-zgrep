@@ -6,7 +6,7 @@
     "typescript": "^5.5.0",
     "ultracite": "^7.10.7"
   },
-  "name": "pi-zg",
+  "name": "pi-zgrep",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
@@ -43,12 +43,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/carvalab/pi-zg.git"
+    "url": "git+https://github.com/carvalab/pi-zgrep.git"
   },
   "bugs": {
-    "url": "https://github.com/carvalab/pi-zg/issues"
+    "url": "https://github.com/carvalab/pi-zgrep/issues"
   },
-  "homepage": "https://github.com/carvalab/pi-zg#readme",
+  "homepage": "https://github.com/carvalab/pi-zgrep#readme",
   "engines": {
     "node": ">=22.18"
   },

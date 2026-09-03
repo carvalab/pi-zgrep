@@ -8,6 +8,41 @@ export interface QueryInput {
   glob?: string;
   type?: string;
 }
+
+// F3: input guard. Three classes of input that look like searches but
+// would either be silently misinterpreted by upstream or trigger an
+// unhelpful "missing: <flag>" parse error:
+//   (a) empty query — every route rejects it; reject up-front with a
+//       message the agent can read.
+//   (b) hybrid positional route with a leading-dash query — the query
+//       token would be parsed as a flag (upstream has no separator on
+//       this route). The rg route handles this case via `-e` in
+//       buildQueryArgs, so we only reject hybrid/fts/vector here.
+//   (c) glob/type starting with "-" — would be sent as `-g -x` /
+//       `-t -x`. upstream treats this as a glob value "-x" with no
+//       error; the agent almost certainly meant an exclusion
+//       (`!node_modules`) so force them to be explicit.
+export const validateQueryInput = (i: QueryInput): void => {
+  if (i.query.length === 0) {
+    throw new Error("query must not be empty");
+  }
+  if (i.mode !== "rg" && i.query.startsWith("-")) {
+    throw new Error(
+      `hybrid/fts/vector routes have no flag separator for the query position; leading "-" queries must use mode=rg (which emits -e). Got query=${JSON.stringify(i.query)}`
+    );
+  }
+  if (i.glob !== undefined && i.glob.startsWith("-")) {
+    throw new Error(
+      `glob must not start with "-"; use !<pattern> to exclude. Got glob=${JSON.stringify(i.glob)}`
+    );
+  }
+  if (i.type !== undefined && i.type.startsWith("-")) {
+    throw new Error(
+      `type must not start with "-". Got type=${JSON.stringify(i.type)}`
+    );
+  }
+};
+
 export const buildQueryArgs = (i: QueryInput): string[] => {
   const args = ["query"];
   if (i.mode === "fts") {
@@ -15,7 +50,17 @@ export const buildQueryArgs = (i: QueryInput): string[] => {
   } else if (i.mode === "vector") {
     args.push("--vector", i.query);
   } else if (i.mode === "rg") {
-    args.push("--rg", i.query);
+    // F3 (a): a query that begins with "-" would be parsed as a flag
+    // by upstream unless prefixed with `-e`. help-query.txt spells
+    // this out: "Use -e when a pattern begins with '-'". Verified
+    // against real `zg` 0.2.1: `zg query --rg -e "-x" --limit 1`
+    // matches; the bare `zg query --rg "-x" --limit 1` form fails
+    // with "missing: --limit, 1".
+    if (i.query.startsWith("-")) {
+      args.push("--rg", "-e", i.query);
+    } else {
+      args.push("--rg", i.query);
+    }
   } else {
     args.push(i.query);
   }

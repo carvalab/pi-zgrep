@@ -16,6 +16,13 @@ export interface Runner {
   // must not trigger reinstall (spec § Components L57).
   probe: () => Promise<string | null>;
 
+  // F7: optional accessor for the captured version line from the
+  // most recent successful probe. When present, createZg skips the
+  // redundant `zg --version` spawn inside probeAndVersion. Older
+  // test runners without this method must still type-check; the
+  // optional call site uses `runner.version?.()`.
+  version?: () => string | undefined;
+
   // Buffered run for status / help / version. The real runner pipes stdout/stderr.
   run: (args: string[]) => Promise<RunResult>;
 
@@ -84,19 +91,28 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     if (!bin) {
       return null;
     }
-    // F3: warn on pre-0.2 upstream (spec § Components L57 — "Version below
-    // 0.2 → warning only, upstream is pre-1.0"). Run is the buffered runner;
-    // --version is a quick query so we don't need the streaming path.
-    // Version probe is warn-only: a failure here (timeout, spawn ENOENT,
-    // parse miss) must never block use of the binary — return { bin } with
-    // no warning and let the real runner own the recovery path.
-    let v: RunResult;
-    try {
-      v = await runner.run(["--version"]);
-    } catch {
-      return { bin };
-    }
-    const m = v.stdout.match(/(?<major>\d+)\.(?<minor>\d+(?:\.\d+)?)/u);
+    // F7: probe() already paid for `zg --version` — reuse the
+    // captured line when available. Falls back to a buffered
+    // `runner.run(["--version"])` for older runners without the
+    // optional method, or when probe captured empty stdout.
+    const cached = runner.version?.();
+    const versionText =
+      cached !== undefined && cached.length > 0
+        ? cached
+        : await (async (): Promise<string> => {
+            // F3: warn on pre-0.2 upstream (spec § Components L57).
+            // Version probe is warn-only: a failure here (timeout,
+            // spawn ENOENT, parse miss) must never block use of the
+            // binary — return { bin } with no warning and let the
+            // real runner own the recovery path.
+            try {
+              const v = await runner.run(["--version"]);
+              return v.stdout;
+            } catch {
+              return "";
+            }
+          })();
+    const m = versionText.match(/(?<major>\d+)\.(?<minor>\d+(?:\.\d+)?)/u);
     let warning: string | undefined;
     if (m?.groups) {
       const major = Math.trunc(Number(m.groups.major));

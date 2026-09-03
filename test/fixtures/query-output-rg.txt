@@ -1,0 +1,3 @@
+hello.ts
+  1:	// Theme preference hydration happens at startup in loadTheme().
+  2:	export function loadTheme(): string {

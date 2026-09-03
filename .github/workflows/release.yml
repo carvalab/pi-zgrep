@@ -1,13 +1,3 @@
-# Commit messages and release PR descriptions run through the humanizer skill per ~/.pi/agent/AGENTS.md.
-#
-# Releases publish via npm Trusted Publishing (OIDC) — no stored token.
-#
-# One-time bootstrap (npm OIDC cannot create a package record, npm/cli#8544):
-#   1. Publish the reservation/first version locally: `npm publish --access public`
-#      (a pi-zg@0.0.0 reservation may already exist).
-#   2. On npmjs.com open pi-zg → Publishing settings → add a Trusted Publisher:
-#      GitHub repo carvalab/pi-zg, workflow release.yml.
-# Every tagged release after that publishes from here, token-free.
 name: Release
 on:
   push: { tags: ["v*"] }
@@ -19,9 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24, registry-url: "https://registry.npmjs.org" }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 26, registry-url: "https://registry.npmjs.org" }
       - run: npm ci
       - run: npm run lint && npm run typecheck && npm run test
       - name: Verify tag matches package.json version

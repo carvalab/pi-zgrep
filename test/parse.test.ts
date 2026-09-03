@@ -10,6 +10,11 @@ import {
 
 const q = () =>
   readFileSync(new URL("fixtures/query-output.txt", import.meta.url), "utf-8");
+const qRg = () =>
+  readFileSync(
+    new URL("fixtures/query-output-rg.txt", import.meta.url),
+    "utf-8"
+  );
 const sReady = () =>
   readFileSync(new URL("fixtures/status-ready.txt", import.meta.url), "utf-8");
 const sNotReady = () =>
@@ -40,6 +45,33 @@ test("parse miss returns raw, never fabricates", () => {
   assert.deepEqual(r, { raw: "total garbage\nnot a zg listing\n" });
 });
 
+test("parses captured --rg output into results (ripgrep-shaped)", () => {
+  // --rg output is bare-path-first then `<line>:\t<text>` entries —
+  // different shape from the default `query groups (N):` stanza. The
+  // parser must detect this shape and return structured results, not
+  // fall through to {raw} with the "file an issue" banner.
+  const r = parseQueryOutput(qRg());
+  assert.equal(
+    "results" in r,
+    true,
+    `rg parse missed; got ${JSON.stringify(r).slice(0, 200)}`
+  );
+  if ("results" in r) {
+    assert.ok(r.results.length > 0);
+    assert.equal(r.results[0].file, "hello.ts");
+    assert.equal(r.results[0].lineStart, 1);
+    // First match line is the comment containing "loadTheme()".
+    assert.match(String(r.results[0].snippet ?? ""), /loadTheme/u);
+  }
+});
+
+test("garbage rg-shaped input still returns {raw}", () => {
+  // Looks superficially like rg output (path-ish line, colon-ish line)
+  // but the match line is malformed → bail to raw, do not fabricate.
+  const r = parseQueryOutput("notreallyapath\nfoo bar baz\n");
+  assert.deepEqual(r, { raw: "notreallyapath\nfoo bar baz\n" });
+});
+
 test("status parser extracts ready/freshness, miss returns raw", () => {
   // input shape comes from the captured `zg status` fixture
   const ready = parseStatusOutput(sReady());
@@ -56,14 +88,18 @@ test("status parser extracts ready/freshness, miss returns raw", () => {
   }
 });
 
-test("status parser on not-ready fixture returns ready=false, possibly_stale", () => {
+test("status parser on not-ready fixture returns ready=false, 'not configured' when label says so", () => {
+  // The "not configured" label is the upstream signal that no index
+  // exists yet — distinct from a stale-but-existing index. README
+  // claims a tri-state (missing/stale/fresh); "not configured" is
+  // the "missing" bucket.
   const r = parseStatusOutput(sNotReady());
   assert.equal("raw" in r, false);
   if ("raw" in r) {
     throw new Error("expected parsed");
   }
   assert.equal(r.ready, false);
-  assert.equal(r.freshness, "possibly_stale");
+  assert.equal(r.freshness, "not configured");
 });
 
 test("rendering is ripgrep-style lines per result", () => {

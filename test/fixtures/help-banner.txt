@@ -1,0 +1,39 @@
+zvec-grep 0.2.1
+
+Usage:
+  zg <command> [options]
+
+Commands:
+  query          Search indexed context or run managed ripgrep
+  index          Build, rebuild, or drop the workspace index
+  status         Show workspace and index status
+  config         Configure provider credentials and embedding model defaults
+  auth           Manage Workspace Remote Embedding authorization
+  server         Start, stop, inspect, or run the shared MCP server
+  install        Install agent integrations
+  uninstall      Remove agent integrations
+  help           Show help for a command or topic
+  version        Print the installed version
+
+Examples:
+  zg query "where authentication is validated"
+  zg query --fts "AuthService"
+  zg query --rg -F "AuthService" src
+  zg index --embedding local/potion-code-16m-v2
+  zg status
+  zg auth status
+  zg server on
+  zg config model set local/potion-code-16m-v2 --device metal
+  zg install
+
+Environment:
+  ZVEC_GREP_HOME        Runtime and daemon state directory; Workspace indexes stay under <root>/.zvec-grep
+  ZVEC_GREP_MODE        Default client mode: direct, server, or auto
+  ZVEC_GREP_EMBEDDING   Default model for new indexes and auth grant
+  ZVEC_GREP_API_KEY     Embedding provider credential fallback
+  ZVEC_GREP_SERVER_URL  MCP server URL used by CLI clients
+
+Run zg help models or zg help file-types for supported indexing capabilities.
+Run zg help environment for all variables, scopes, aliases, and precedence.
+Run zg help <command> or zg <command> --help for command-specific help.
+Use zg -h/--help for this page and zg -v/--version for the version.

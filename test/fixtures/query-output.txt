@@ -1,0 +1,9 @@
+query groups (1):
+Q1 [primary]: where is the theme restored
+hits: 1
+
+#1 matchedBy=fts+vector hello.ts:2-4
+source:
+2	function loadTheme(): string {
+3	  return "dark";
+4	}

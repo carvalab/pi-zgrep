@@ -1,0 +1,12 @@
+# Fixture note: tail excerpt of stdout from `zg index` (zg 0.2.1), not the full output. Earlier lines are spinner / progress noise; see test/fixtures/NOTES.md for context.
+
+tip	Default indexing skips common noise. For large or remote-embedding indexes, inspect this long-lived workspace and choose focused -g/--glob and -t/--type filters.
+Scanning files...
+Preparing local/potion-code-16m-v2
+Downloading local/potion-code-16m-v2 · 16 KiB
+Indexing complete
+Workspace index
+files	1 scanned, 1 added, 0 modified, 0 retried, 0 unchanged, 0 deleted, 0 failed
+entities	1
+duration	3s (2901ms)
+roots	/tmp/tmp.EAkzBafaw1/sample-project

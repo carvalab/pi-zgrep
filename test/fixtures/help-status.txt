@@ -1,0 +1,8 @@
+Usage:
+  zg status [root] [--mode <direct|server|auto>] [--check-ready]
+
+Shows the nearest workspace root, index policy, index state, embedding schema,
+stored paths, refresh status, and suggested next action.
+
+--check-ready preserves the normal output and exits non-zero unless the
+Workspace index is ready.

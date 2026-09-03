@@ -1,0 +1,54 @@
+Usage:
+  zg query <query> [options]
+  zg query --hybrid <query> --fts <query> --vector <query> [--fuse]
+  zg query --rg [rg-options] <pattern> [path...]
+
+Search routes:
+  positional query                  Hybrid FTS and vector search
+  --hybrid <query>                  Add an explicit hybrid query
+  --fts <query>                     Add an exact/lexical query
+  --vector <query>                  Add a semantic/vector query
+  --fuse                            Fuse all query groups into one ranked list
+  --rg                              Run exhaustive managed ripgrep
+
+Result options:
+  --limit <n>                       Maximum results per group (default: 7)
+  --human                           Human-readable output (default: agent markdown)
+  --preview <none|short|full>       Indexed preview size (default: none; --human: full)
+  --debug                           Print diagnostics to stderr
+  --trace                           Include per-hit indexed search trace
+  --refresh <background|wait|off>   Refresh policy (defaults: server=background, direct=off)
+                                    In direct mode, background warns and falls back to off
+  --mode <direct|server|auto>       Select indexed query transport (default: auto)
+
+Indexed results are shown by query group, preserving each group's own rank.
+A result that matches more than one group is shown in each matching group.
+
+Embedding runtime:
+  --api-key <key>                   Embedding provider API key
+  --model-cache <path>              Local model cache directory
+  --device <device>                 auto, cpu, metal, vulkan, cuda
+  --allow-remote                    Allow Remote Embedding for this command only
+
+File filters:
+  -g, --glob <glob>                 Include paths; prefix with ! to exclude; repeatable
+  --iglob <glob>                    Case-insensitive path glob; repeatable
+  -t, --type <type>                 Include a ripgrep file type; repeatable
+  -T, --type-not <type>             Exclude a ripgrep file type; repeatable
+  --modified-after <time>           Only files modified after a date or epoch milliseconds
+  --modified-before <time>          Only files modified before a date or epoch milliseconds
+  --symbol-type <type>              module, class, interface, function, value, alias
+  --prefer-symbol                   Prefer exact indexed symbols
+
+Managed --rg supports common ripgrep matching, context, engine, encoding,
+discovery, glob, and type flags. Use -e when a pattern begins with "-".
+Options that replace rg's output format are rejected.
+
+Environment:
+  ZVEC_GREP_MODE         Default client mode: direct, server, or auto
+  ZVEC_GREP_API_KEY      Embedding provider credential fallback
+  ZVEC_GREP_ENDPOINT     Remote Embedding endpoint fallback
+  ZVEC_GREP_MODEL_CACHE  Local embedding model cache directory
+  ZVEC_GREP_DEVICE       Local embedding device: auto, cpu, metal, vulkan, or cuda
+
+See zg help environment for precedence and Server-mode scope.

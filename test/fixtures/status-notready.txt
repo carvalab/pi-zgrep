@@ -1,0 +1,7 @@
+? Workspace index is not configured
+  /tmp/tmp.EAkzBafaw1/sample-project
+
+  Storage     .zvec-grep/index.zvec
+  Policy      undecided
+
+  Next        zg index or zg query --rg

@@ -118,7 +118,12 @@ re-run the smoke.
 
 Tag `v*` → `.github/workflows/release.yml` publishes via npm **Trusted
 Publishing (OIDC)** — no stored tokens. Workflow: lint + typecheck + tests,
-tag/version match check, `npm publish --provenance`. The npmjs.com Trusted
+tag/version match check, `npm publish --provenance`, then a `release` job that
+extracts the tag's section from `CHANGELOG.md` and creates or updates the
+GitHub release. The changelog is curated, not generated: before tagging, run
+`git-cliff` (config in `cliff.toml`) for a raw commit draft, rewrite the
+section as user-facing notes, and commit `CHANGELOG.md`. A missing section
+fails the release job loudly rather than shipping empty notes. The npmjs.com Trusted
 Publisher must name repo `carvalab/pi-zgrep`, workflow `release.yml`,
 environment `npm`, action `npm publish`. Package record bootstrapped locally
 (`pi-zgrep@0.0.0`) because OIDC cannot create a package (npm/cli#8544).

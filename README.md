@@ -144,3 +144,7 @@ npm run format:check    # CI gate
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+## Changelog
+
+Release notes live in [CHANGELOG.md](./CHANGELOG.md); each section is curated before the tag lands.

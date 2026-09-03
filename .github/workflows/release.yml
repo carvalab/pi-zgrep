@@ -3,7 +3,7 @@ on:
   push: { tags: ["v*"] }
 permissions:
   id-token: write
-  contents: read
+  contents: write
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -29,4 +29,29 @@ jobs:
             echo "pi-zgrep@$PKG_VERSION is already published, skipping"
           else
             npm publish --provenance
+          fi
+
+  release:
+    runs-on: ubuntu-latest
+    needs: publish
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create or update the GitHub release from the curated changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES=$(awk -v tag="$GITHUB_REF_NAME" '
+            $0 == "## [" tag "]" || $0 ~ "^## \[" tag "\] " { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            echo "::error::CHANGELOG.md has no section for $GITHUB_REF_NAME."
+            echo "::error::Curate the release notes before tagging: run git-cliff for a raw draft, rewrite it as user-facing notes, commit CHANGELOG.md, then re-tag."
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$NOTES"
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "$NOTES"
           fi

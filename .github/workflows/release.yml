@@ -41,7 +41,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           NOTES=$(awk -v tag="$GITHUB_REF_NAME" '
-            $0 == "## [" tag "]" || $0 ~ "^## \[" tag "\] " { found = 1; next }
+            $0 == "## [" tag "]" || $0 ~ "^## \\[" tag "\\] " { found = 1; next }
             found && /^## \[/ { exit }
             found { print }
           ' CHANGELOG.md)

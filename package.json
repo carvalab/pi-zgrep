@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@zvec/zvec-grep": "^0.2.1"
+    "@zvec/zvec-grep": "^0.2.2"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -4,6 +4,10 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
+## [v0.4.2] - 2026-10-14
+
+- The README leads with what 0.4 fixed: the print-mode crash, `/zg-status` announcing itself, `/zg-server`, and the `/zg-index` flag suggestions. The pi.dev package page renders the README, so none of that was visible there.
+
 ## [v0.4.1] - 2026-10-14
 
 - The README now documents `/zg-server`, the `/zg-index` flag suggestions, and that the daemon starts at session start and is shared across sessions. It also fixes a stray character that broke the `/zg-status` line on the pi.dev package page.

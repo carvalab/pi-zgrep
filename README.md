@@ -30,6 +30,13 @@ doc/plans/2026-09-02-pi-zg-extension.md:353-426  heading: Task 5: Output parser 
 
 Nothing in that query is a literal identifier in the codebase. Ripgrep scores zero on questions like this one; see [Benchmarks](#benchmarks) for where the numbers live.
 
+## What's new in 0.4
+
+- Print mode works. `pi -p "..."` used to exit 1 with a crash dump, because background work (the session warmup, an index build, an install) outlived the short session and then touched a context pi had already invalidated. It now stops reporting when the session is gone instead of taking the process down. Scripts and agent harnesses that shell out to pi were hitting this on every run.
+- `/zg-status` tells you it started. It used to sit silent until its probes finished, so it looked like nothing happened.
+- `/zg-server on|off|status` controls the daemon from inside pi, and the daemon now starts with the session and is shared across sessions instead of waiting for the first build.
+- `/zg-index` suggests `--device`, `--model-cache`, and `--allow-remote` as you type. The command always forwarded them; they were just undiscoverable.
+
 ## Install
 
 ```bash

@@ -30,3 +30,19 @@ jobs:
           path: ~/.zvec-grep/models
           key: zvec-models-${{ runner.os }}-${{ runner.arch }}
       - run: ZG_TEST_MODEL=1 node --test test/model-load.test.ts
+
+  # Real pi session against openrouter/free. Skips itself when the secret is
+  # absent, so forks without it still pass. One OS is enough: the matrix
+  # above already covers Windows.
+  pi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm install -g @earendil-works/pi-coding-agent
+      - run: npm ci
+      - run: npm run test:pi
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

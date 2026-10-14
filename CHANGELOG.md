@@ -4,11 +4,12 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
-## Unreleased
+## [v0.5.0] - 2026-10-14
 
 - Windows support, contributed by Rodrigo Jäger (@rodrigojager). The launcher resolves npm `.cmd` shims and runs packaged `.js`, `.mjs`, and `.cjs` entries through Node, result paths keep spaces, Unicode, and drive letters, and `/zg-index` preserves quoted roots and flag values. CI now runs on Windows across Node 22, 24, and 26.
 - His review also fixed bugs that affect every platform: a query uses the current call's cancellation instead of the first call's cached runner, a nonzero `zg` exit comes back as a tool error, index errors on stderr reach the progress output, an empty result set parses as no hits, and an already-aborted signal kills the child.
 - The package now ships his `pi-zgrep-search` skill, so pi loads it alongside the extension.
+- CI runs a real pi session against `openrouter/free` and checks that the model calls the zg tool and gets the fixture file back. It skips when no `OPENROUTER_API_KEY` is configured.
 
 ## [v0.4.2] - 2026-10-14
 

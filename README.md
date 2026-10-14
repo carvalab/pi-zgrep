@@ -142,6 +142,7 @@ cd pi-zgrep
 npm install
 npm run test            # unit tests (parser, arg builder, ensure chain, guidance)
 ZG_TEST_E2E=1 npm run test:e2e   # real zg engine required on PATH
+npm run test:pi          # real pi session against openrouter/free; needs OPENROUTER_API_KEY
 ```
 
 Fixtures under `test/fixtures/` are captured from real `zg` 0.2.1 runs and act as the compat tripwire for both the arg builder and the parser. To regenerate a fixture, delete it and re-run the capture commands in `doc/plans/2026-09-02-pi-zg-extension.md` (Task 3), or copy from a fresh `zg` run against `test/fixtures/sample-project/`.

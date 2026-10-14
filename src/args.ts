@@ -102,6 +102,41 @@ export const buildStatusArgs = (): string[] => ["status", "--check-ready"];
 
 export type IndexCommandArgs = { args: string[]; ok: true } | { ok: false };
 
+// Tokenize arguments without shell evaluation. Backslashes in Windows paths
+// are literal; quoted spaces and escaped double quotes stay in one argument.
+const splitCommandArgs = (raw: string): string[] | null => {
+  const args: string[] = [];
+  let token = "";
+  let quote = "";
+  let active = false;
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    if (char === "\\" && quote === '"' && raw[i + 1] === '"') {
+      token += '"';
+      i += 1;
+    } else if ((char === '"' || char === "'") && (!quote || quote === char)) {
+      quote = quote ? "" : char;
+      active = true;
+    } else if (/\s/u.test(char) && !quote) {
+      if (active) {
+        args.push(token);
+      }
+      token = "";
+      active = false;
+    } else {
+      token += char;
+      active = true;
+    }
+  }
+  if (quote) {
+    return null;
+  }
+  if (active) {
+    args.push(token);
+  }
+  return args;
+};
+
 // /zg-index argument guard. Flags pass through untouched (thin integrator —
 // upstream can add flags without changes here). A bare word is forwarded only
 // when it exists on disk (upstream's optional positional [root]); anything
@@ -112,9 +147,13 @@ export const parseIndexCommandArgs = (
   raw?: string,
   exists: (p: string) => boolean = existsSync
 ): IndexCommandArgs => {
-  const args = raw ? raw.split(/\s+/u).filter((s) => s.length > 0) : [];
-  const bare = args.filter((s) => !s.startsWith("-"));
-  if (bare.some((s) => !exists(s))) {
+  const args = splitCommandArgs(raw ?? "");
+  if (!args) {
+    return { ok: false };
+  }
+  // Only the leading positional argument is a root. Values after flags must
+  // pass through, including future engine options we do not know about yet.
+  if (args[0] && !args[0].startsWith("-") && !exists(args[0])) {
     return { ok: false };
   }
   return { args, ok: true };

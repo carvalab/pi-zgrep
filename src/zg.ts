@@ -168,13 +168,15 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     return again;
   };
 
-  const runBuild = async (): Promise<void> => {
+  const runBuild = async (
+    hooks: Pick<ZgOpts, "signal" | "onUpdate"> = {}
+  ): Promise<void> => {
     // F2: buffer the last ~10 progress lines so a failed build can surface
     // zg's own output instead of pointing the user at `zg status`. Every
     // line still forwards to opts.onUpdate verbatim.
     const TAIL_MAX = 10;
     const tail: string[] = [];
-    const userOnUpdate = opts.onUpdate;
+    const userOnUpdate = hooks.onUpdate ?? opts.onUpdate;
     const wrappedOnUpdate = userOnUpdate
       ? (s: string): void => {
           tail.push(s);
@@ -187,7 +189,7 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     const res = await runner.stream(buildIndexArgs(), {
       cwd: opts.root,
       onUpdate: wrappedOnUpdate,
-      signal: opts.signal,
+      signal: hooks.signal ?? opts.signal,
     });
     if (res.code !== 0) {
       const tailText =
@@ -217,7 +219,10 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     void startServerFireAndForget();
   };
 
-  const ensureIndex = async (): Promise<{ error?: string }> => {
+  const ensureIndex = async (
+    hooks: Pick<ZgOpts, "signal" | "onUpdate"> = {}
+  ): Promise<{ error?: string }> => {
+    hooks.signal?.throwIfAborted();
     const st = runner.probeStatus
       ? await runner.probeStatus()
       : await runner.run(buildStatusArgs());
@@ -251,7 +256,7 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     // wrapper — after the build has actually settled.
     buildP = (async (): Promise<unknown> => {
       try {
-        await runBuild();
+        await runBuild(hooks);
         startServerOnce();
       } catch (error) {
         failedRoots.add(opts.root);

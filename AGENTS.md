@@ -77,10 +77,13 @@ npm test               # 48 hermetic unit tests — no zg binary needed
 ZG_TEST_E2E=1 npm run test:e2e   # real zg binary, hermetic (scratch dir, cached model)
 ```
 
-CI runs the first four on every push/PR (Node 22, 24, 26), then
-`ZG_TEST_MODEL=1 node --test test/model-load.test.ts`, the regression for
-issue #6, where `zg index` fails to load the local embedding model. Run e2e
-locally before releases or whenever fixtures/upstream versions change. The e2e
+CI runs the first four on every push/PR (Node 22, 24, 26, on Ubuntu and
+Windows), then `ZG_TEST_MODEL=1 node --test test/model-load.test.ts`, the
+regression for issue #6, where `zg index` fails to load the local embedding
+model. A separate job runs `npm run test:pi`, a real pi session against
+`openrouter/free` that checks the model calls the zg tool; it skips when
+`OPENROUTER_API_KEY` is unset. Run e2e locally before releases or whenever
+fixtures/upstream versions change. The e2e
 suite exercises the real spawn path: index → semantic / fts / vector / hybrid / rg queries against
 `test/fixtures/sample-project/`.
 

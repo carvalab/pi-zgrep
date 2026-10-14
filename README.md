@@ -118,7 +118,7 @@ On hosts without node-gyp the first attempt can fail on sharp's optional postins
 
 **Parse miss.** If upstream changes its output shape, the tool falls back to raw text passthrough prefixed with a hint to run `/zg-status` and file an issue at [carvalab/pi-zgrep](https://github.com/carvalab/pi-zgrep/issues). The fixtures under `test/fixtures/` are the compat tripwire for the parser.
 
-**Windows is not supported.** The resolver spawns `zg` directly with `shell: false`, which cannot launch npm's `.cmd` shims. macOS and Linux only.
+**Windows is supported**, thanks to [Rodrigo Jäger (@rodrigojager)](https://github.com/rodrigojager). The launcher resolves npm's `.cmd` shims, runs packaged `.js`, `.mjs`, and `.cjs` entries through Node, and hides background consoles. Quoted index paths and flag values are preserved, and results keep filenames with spaces, Unicode, and drive letters.
 
 ## Benchmarks
 
@@ -126,9 +126,13 @@ The retrieval and answer-quality numbers that matter come from upstream's own be
 
 As a local reference we also keep a small latency and hit-rate comparison of zg against ripgrep and GNU grep on this repo's own code. The method and the numbers live in [doc/benchmark.md](doc/benchmark.md); rerun it yourself with `./doc/bench.sh` (130-line script, no dependencies).
 
+## Skill
+
+The package ships a `pi-zgrep-search` skill, written by [Rodrigo Jäger (@rodrigojager)](https://github.com/rodrigojager). pi loads it with the extension, and it tells the agent which route to pick, how to keep retrieval small, and when to fall back to native search.
+
 ## Out of scope
 
-No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rendering, no `@`-mention autocomplete, no bundled skills, no remote embeddings.
+No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rendering, no `@`-mention autocomplete, no remote embeddings.
 
 ## Development
 
@@ -138,6 +142,7 @@ cd pi-zgrep
 npm install
 npm run test            # unit tests (parser, arg builder, ensure chain, guidance)
 ZG_TEST_E2E=1 npm run test:e2e   # real zg engine required on PATH
+npm run test:pi          # real pi session against openrouter/free; needs OPENROUTER_API_KEY
 ```
 
 Fixtures under `test/fixtures/` are captured from real `zg` 0.2.1 runs and act as the compat tripwire for both the arg builder and the parser. To regenerate a fixture, delete it and re-run the capture commands in `doc/plans/2026-09-02-pi-zg-extension.md` (Task 3), or copy from a fresh `zg` run against `test/fixtures/sample-project/`.

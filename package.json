@@ -68,7 +68,7 @@
     "src",
     "skills",
     "README.md",
-      "LICENSE"
+    "LICENSE"
   ],
   "publishConfig": {
     "access": "public",

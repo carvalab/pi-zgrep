@@ -34,6 +34,6 @@ On errors, missing coverage or irrelevant results, immediately use native `rg`/`
 
 The installed extension automatically starts/reuses the daemon and indexes the workspace in the background. This is part of the user's chosen installation. Use local embeddings. Ordinary retrieval does not authorize remote providers, manual rebuilds or index deletion.
 
-Pi commands: `/zg-status`, `/zg-index [engine index arguments]`, `/zg-server on|off|status`. They are UI commands, not shell tools. Quoted paths and values are supported, for example `/zg-index "C:\Work Folder" --embedding local/potion-code-16m-v2 --mode auto`. Use `auto` when a daemon owns the workspace; the engine intentionally rejects direct writes to a daemon-owned index. Use rebuild/drop only when requested. The engine CLI is `zg query`, `zg index`, `zg status`, `zg server`; consult installed help for extra options.
+Pi commands: `/zg-status`, `/zg-index [engine index arguments]`, `/zg-server on|off|status`. They are UI commands, not shell tools. Quoted paths and values are supported, for example `/zg-index "My Project" --embedding local/potion-code-16m-v2 --mode auto`. Use `auto` when a daemon owns the workspace; the engine intentionally rejects direct writes to a daemon-owned index. Use rebuild/drop only when requested. The engine CLI is `zg query`, `zg index`, `zg status`, `zg server`; consult installed help for extra options.
 
 Return a concise finding with actual file paths and line ranges. Distinguish partial evidence from confirmed conclusions.

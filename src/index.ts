@@ -372,12 +372,8 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
     // which awaitChild rejects with. Wrap the await to catch it so the
     // npm-missing case yields {reason:"enoent"} and the bun fallback
     // is reachable.
-    const child = spawn(bin, cmdArgs, {
-      env: opts.env,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    // npm and bun are .cmd shims on Windows; startProcess resolves them.
+    const child = startProcess(bin, cmdArgs);
     const linesP =
       opts.onUpdate && child.stdout
         ? forwardLines(child.stdout, opts.onUpdate)

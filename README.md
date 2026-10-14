@@ -62,7 +62,7 @@ Results come back as ranked `file:line` lines. The tool result `details` carry t
 ## Commands
 
 - `/zg-index [args...]` passes arguments through to `zg index` (for example `--rebuild`). Progress streams in the status line, and the handler notifies you when the build starts and finishes.
-- `/zg-status` shows the resolved binary and version, index readiness and freshness, and the daemon pointer. Run it when something looks off; the output tells you whether the index is missing, possibly stale, or fresh.
+| `/zg-status` shows the resolved binary and version, index readiness and freshness, and the daemon pointer. Run it when something looks off; the output tells you whether the index is missing, possibly stale, or fresh. Like `/zg-index`, it notifies you when it starts and shows progress in the status line while its probes run.
 
 ## How it behaves
 

@@ -59,6 +59,16 @@ into `zg` argv, parses stdout back into a structured result.
 
 ## How to check (verification ladder)
 
+**Registry:** always `https://registry.npmjs.org/`, pinned in the repo
+`.npmrc`. Installs resolve through whatever registry is configured, so a
+machine pointed at a private mirror records that mirror's hostnames in
+`package-lock.json`. Those `resolved` URLs are what `npm ci` follows, so a
+lockfile carrying a private host breaks installs for anyone off that network
+and publishes internal infrastructure. If a regenerated lockfile picks up a
+non-npmjs host, delete it and regenerate with the `.npmrc` in place rather
+than hand-editing: npm keeps existing `resolved` entries when versions and
+integrity are unchanged, so the registry setting alone will not clean them.
+
 ```bash
 npm run lint           # oxlint
 npm run format:check   # oxfmt
@@ -116,6 +126,61 @@ file metadata storage does not exist`. That is a stale/broken gitignored
 bug — the e2e suite still passes. Fix: `rm -rf .zvec-grep && zg index`, then
 re-run the smoke.
 
+### Clean-room test (latest pi, this extension only)
+
+The smoke above runs in the dev checkout, where `node_modules`, the packaged
+engine, and any global `zg` can mask a packaging problem. This procedure tests
+what a user actually gets: **the latest published pi, and this extension and
+nothing else.** Run it before tagging any release — it is the only check that
+catches a broken `files`/manifest/publishConfig, which the whole unit + e2e
+suite happily passes with.
+
+```bash
+# 0. Use npmjs.org explicitly, so the tarball resolves the same way a user's
+#    will and the run cannot pick up a private mirror from this machine.
+npm config set registry https://registry.npmjs.org/ --location=project
+npm view @earendil-works/pi-coding-agent version   # pin what "latest" is now
+
+# 1. Fresh pi install in an isolated prefix — no dev checkout, no repo
+#    extensions, no ~/.pi settings leakage.
+export PI_ZG_CLEAN=/tmp/pi-zg-clean
+rm -rf "$PI_ZG_CLEAN" && mkdir -p "$PI_ZG_CLEAN"
+npm i --prefix "$PI_ZG_CLEAN" @earendil-works/pi-coding-agent@latest
+
+# 2. Pack the working tree exactly as npm would publish it, then install that
+#    tarball. Do NOT point at the source dir: a tarball exercises files[],
+#    the pi manifest, and engines, which `-e .` skips.
+npm pack --pack-destination /tmp
+PI_ZG_TGZ=$(ls -t /tmp/pi-zgrep-*.tgz | head -1)
+npm i --prefix "$PI_ZG_CLEAN" "$PI_ZG_TGZ"
+
+# 3. Run that pi with ONLY this extension. `--no-extensions` drops anything
+#    else; `-e` adds just the one under test. Do NOT pass `--no-session`: it
+#    suppresses session logging, so the log check in step 4 finds nothing.
+"$PI_ZG_CLEAN/node_modules/.bin/pi" -e "$PI_ZG_CLEAN/node_modules/pi-zgrep" \
+  -p --no-extensions --session-dir "$PI_ZG_CLEAN/log" \
+  "Use the zg tool (only this tool) with query 'safeUi' mode rg limit 3 on \
+  this workspace. Reply with just the file paths."
+
+# 4. Pass criteria, all four:
+#    - exit 0, and NO "extension ctx is stale" on stderr (issue 5 regression)
+#    - the session log contains a "zg" tool call
+#    - the printed paths are real files in this repo
+#    - the packaged engine resolved under the clean prefix, so no
+#      global-install fallback is needed. npm hoists it, so it lands at the
+#      prefix root, NOT nested under pi-zgrep:
+ls -d "$PI_ZG_CLEAN/node_modules/@zvec/zvec-grep"
+grep -o '"name":"zg"' "$PI_ZG_CLEAN"/log/*.jsonl   # expect ≥1 hit
+```
+
+A failure here that the dev smoke misses is usually one of: `files` in
+`package.json` excluding a needed source file, the `pi.extensions` manifest
+pointing at a path not shipped, or the engine not being a real `dependencies`
+entry (so a user gets a bare extension that installs on first use).
+
+To check the published tarball rather than the local build, swap step 2 for
+`npm i --prefix "$PI_ZG_CLEAN" pi-zgrep@<version>` after the release lands.
+
 ## Repo map
 
 - `src/index.ts` — extension entry: tool registration, Runner, spawn plumbing
@@ -140,6 +205,21 @@ fails the release job loudly rather than shipping empty notes. The npmjs.com Tru
 Publisher must name repo `carvalab/pi-zgrep`, workflow `release.yml`,
 environment `npm`, action `npm publish`. Package record bootstrapped locally
 (`pi-zgrep@0.0.0`) because OIDC cannot create a package (npm/cli#8544).
+
+Before tagging: run the **clean-room test** (see § How to check) — latest pi,
+this extension only, installed from the packed tarball. It is the only check
+that exercises `files`, the `pi` manifest, and the packaged engine, all of
+which the dev smoke and the e2e suite pass with regardless of packaging bugs.
+Also confirm every `resolved` URL in `package-lock.json` points at npmjs:
+
+```bash
+grep -c 'registry.npmjs.org' package-lock.json   # expect > 0
+grep -o '"resolved": "https://[^/]*' package-lock.json | sort -u   # npmjs.org only
+```
+
+After `npm publish` lands, confirm `npm view pi-zgrep version` reports the tag
+you pushed. That check cannot run before the publish, so it is not a pre-tag
+gate.
 
 ### pi.dev visibility
 

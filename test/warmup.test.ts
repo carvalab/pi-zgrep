@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { safeUi, sessionWarmup } from "../src/index.ts";
 
@@ -63,6 +64,9 @@ test("warmup with ready index: probes + status-checks, no build, clears status",
     const log = path.join(dir, "calls.log");
     const { calls, ui } = makeUi();
     await sessionWarmup({ cwd: dir, ui }, { PI_ZG_BIN: makeFakeZg(dir, log) });
+    // The daemon start is fire-and-forget, so its log line can land after
+    // warmup resolves. The probe and status spawns are awaited.
+    await delay(500);
     const argv0 = new Set(
       readFileSync(log, "utf-8").split("\n").filter(Boolean)
     );

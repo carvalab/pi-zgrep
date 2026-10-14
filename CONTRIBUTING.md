@@ -18,12 +18,13 @@ All four commands must pass before you open a PR:
 npm run lint && npm run format:check && npm run typecheck && npm run test
 ```
 
-CI runs the same set on Node 24.
+CI runs the same set on Node 22, 24, and 26, then the embedding-model load test (`test/model-load.test.ts`, gated on `ZG_TEST_MODEL=1`).
 
 ## Tests
 
 - Unit tests run by default: `npm run test`.
 - End-to-end tests need a real `zg` binary on PATH and opt in via env var: `ZG_TEST_E2E=1 npm run test:e2e`. They index `test/fixtures/sample-project/` in a scratch dir and exercise all four query routes.
+- `test/model-load.test.ts` checks that `zg index` loads the local embedding model (issue #6). It opts in via `ZG_TEST_MODEL=1` and downloads the model on a cold cache, so it stays out of the default run. CI runs it on every job.
 
 ## Fixture regeneration
 

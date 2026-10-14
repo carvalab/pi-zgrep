@@ -541,6 +541,39 @@ const ZgToolParams = Type.Object({
 
 // --- Commands ---------------------------------------------------------------
 
+// Structural slice of the pi ctx that event handlers receive, with the exact
+// signatures from ExtensionUIContext so the real ctx assigns cleanly.
+export interface WarmupUi {
+  notify: (message: string, type?: "info" | "warning" | "error") => void;
+  setStatus: (key: string, text: string | undefined) => void;
+}
+export interface WarmupCtx {
+  cwd: string;
+  ui: WarmupUi;
+}
+
+// pi invalidates the event ctx when the session ends/reloads; any ui call
+// after that throws "This extension ctx is stale" and, in print mode, an
+// uncaught throw kills the process. Async work started from a ctx (warmup,
+// long builds, multi-spawn status probes) can outlive it, so those paths go
+// through this best-effort wrapper.
+export const safeUi = (ctx: { ui: WarmupUi }): WarmupUi => ({
+  notify: (message, type) => {
+    try {
+      ctx.ui.notify(message, type);
+    } catch {
+      // stale ctx — the session that owned it is gone.
+    }
+  },
+  setStatus: (key, text) => {
+    try {
+      ctx.ui.setStatus(key, text);
+    } catch {
+      // stale ctx — the session that owned it is gone.
+    }
+  },
+});
+
 // Palette hints for command arguments (pi filters by the typed prefix and
 // falls back to null when nothing matches). The /zg-index list is the common
 // `zg index` flags, not the full surface — the command stays passthrough.
@@ -552,6 +585,9 @@ const ZG_INDEX_FLAGS = [
   "--debug",
   "--mode",
   "--embedding",
+  "--device",
+  "--model-cache",
+  "--allow-remote",
   "--glob",
 ];
 const completeFrom =
@@ -570,8 +606,11 @@ const registerZgIndexCommand = (pi: ExtensionAPI): void => {
     getArgumentCompletions: completeFrom(ZG_INDEX_FLAGS),
     handler: async (args, ctx) => {
       const started = Date.now();
-      ctx.ui.setStatus("pi-zg", "indexing…");
-      ctx.ui.notify("zg index started", "info");
+      // safeUi: a build can outlive a session reload/newSession, and an
+      // uncaught stale-ctx throw here would kill the process.
+      const ui = safeUi(ctx);
+      ui.setStatus("pi-zg", "indexing…");
+      ui.notify("zg index started", "info");
       // F6: the runner-level onUpdate wrapper was dead here — /zg-index
       // never installs, so opts.onUpdate is never invoked. Fold setStatus
       // into streamOnUpdate so each build-progress line surfaces live.
@@ -579,7 +618,7 @@ const registerZgIndexCommand = (pi: ExtensionAPI): void => {
       if (!parsed.ok) {
         // Don't spawn a doomed build: bare words that aren't existing paths
         // (e.g. "status") die upstream as [ROOT_NOT_FOUND] with exit 1.
-        ctx.ui.notify(
+        ui.notify(
           "Usage: /zg-index [--rebuild | --drop --yes | <zg index flags> | <workspace path>]. For index status use /zg-status (or run `zg status` in bash).",
           "error"
         );
@@ -597,7 +636,7 @@ const registerZgIndexCommand = (pi: ExtensionAPI): void => {
       const TAIL_MAX = 10;
       const tail: string[] = [];
       const streamOnUpdate = (s: string): void => {
-        ctx.ui.setStatus("pi-zg", s.slice(0, 80));
+        ui.setStatus("pi-zg", s.slice(0, 80));
         tail.push(s);
         if (tail.length > TAIL_MAX) {
           tail.shift();
@@ -611,19 +650,19 @@ const registerZgIndexCommand = (pi: ExtensionAPI): void => {
         });
         const duration = ((Date.now() - started) / 1000).toFixed(1);
         if (res.code === 0) {
-          ctx.ui.notify(`zg index finished in ${duration}s`, "info");
+          ui.notify(`zg index finished in ${duration}s`, "info");
           return;
         }
         const tailText =
           tail.length > 0 ? `\nLast output:\n${tail.join("\n")}` : "";
-        ctx.ui.notify(
+        ui.notify(
           `zg index failed (exit ${res.code}) in ${duration}s${tailText}`,
           "error"
         );
       } finally {
         // F5: install/build-progress status must clear even if the build
         // rejects (e.g. ENOENT, signal abort).
-        ctx.ui.setStatus("pi-zg", undefined);
+        ui.setStatus("pi-zg", undefined);
       }
     },
   });
@@ -633,66 +672,76 @@ const registerZgStatusCommand = (pi: ExtensionAPI): void => {
   pi.registerCommand("zg-status", {
     description: "Show zg index readiness and freshness",
     handler: async (_args, ctx) => {
-      const runner = makeRunner({ cwd: ctx.cwd, env: process.env });
-      // Probe the binary: single `zg --version` spawn. On success we have
-      // both the resolved bin name and the version string; on any failure
-      // (ENOENT, non-zero exit, spawn throw) the line degrades to the
-      // "not found" form so the handler never crashes.
-      const binName = nonEmpty(process.env.PI_ZG_BIN)
-        ? (process.env.PI_ZG_BIN as string)
-        : "zg";
-      let versionFirstLine: string | null = null;
+      // Same triggered-then-result shape as /zg-index: without this the
+      // command looks like a no-op until its three probes finish. safeUi
+      // because the probe spawns can outlive a short print-mode session.
+      const ui = safeUi(ctx);
+      ui.setStatus("pi-zg", "checking zg status…");
+      ui.notify("zg status started", "info");
       try {
-        const v = await runner.run(["--version"]);
-        if (v.code === 0) {
-          const trimmed = v.stdout.trim();
-          if (trimmed.length > 0) {
-            versionFirstLine = trimmed.split("\n", 1)[0] ?? null;
+        const runner = makeRunner({ cwd: ctx.cwd, env: process.env });
+        // Probe the binary: single `zg --version` spawn. On success we have
+        // both the resolved bin name and the version string; on any failure
+        // (ENOENT, non-zero exit, spawn throw) the line degrades to the
+        // "not found" form so the handler never crashes.
+        const binName = nonEmpty(process.env.PI_ZG_BIN)
+          ? (process.env.PI_ZG_BIN as string)
+          : "zg";
+        let versionFirstLine: string | null = null;
+        try {
+          const v = await runner.run(["--version"]);
+          if (v.code === 0) {
+            const trimmed = v.stdout.trim();
+            if (trimmed.length > 0) {
+              versionFirstLine = trimmed.split("\n", 1)[0] ?? null;
+            }
+          }
+        } catch {
+          // probe failed — versionFirstLine stays null; formatBinaryLine
+          // degrades to the not-found line.
+        }
+        let res: RunResult;
+        try {
+          res = await runner.run(buildStatusArgs());
+        } catch {
+          // F3: status call failed (spawn ENOENT, daemon crash, etc.) — emit
+          // the not-found binary line and skip the index lines so the
+          // handler never rejects.
+          ui.notify(formatBinaryLine(null, null), "info");
+          return;
+        }
+        const parsed = parseStatusOutput(res.stdout);
+        const lines: string[] = [formatBinaryLine(binName, versionFirstLine)];
+        if ("raw" in parsed) {
+          lines.push("index: unknown (could not parse zg output)");
+          if (parsed.raw.trim().length > 0) {
+            lines.push(parsed.raw.trim());
+          }
+        } else if (parsed.ready) {
+          lines.push("index: ready");
+          if (parsed.freshness) {
+            lines.push(`freshness: ${parsed.freshness}`);
+          }
+        } else {
+          lines.push("index: not ready");
+          if (parsed.freshness) {
+            lines.push(`freshness: ${parsed.freshness}`);
           }
         }
-      } catch {
-        // probe failed — versionFirstLine stays null; formatBinaryLine
-        // degrades to the not-found line.
-      }
-      let res: RunResult;
-      try {
-        res = await runner.run(buildStatusArgs());
-      } catch {
-        // F3: status call failed (spawn ENOENT, daemon crash, etc.) — emit
-        // the not-found binary line and skip the index lines so the
-        // handler never rejects.
-        ctx.ui.notify(formatBinaryLine(null, null), "info");
-        return;
-      }
-      const parsed = parseStatusOutput(res.stdout);
-      const lines: string[] = [formatBinaryLine(binName, versionFirstLine)];
-      if ("raw" in parsed) {
-        lines.push("index: unknown (could not parse zg output)");
-        if (parsed.raw.trim().length > 0) {
-          lines.push(parsed.raw.trim());
+        if (res.stderr.trim().length > 0) {
+          lines.push(res.stderr.trim());
         }
-      } else if (parsed.ready) {
-        lines.push("index: ready");
-        if (parsed.freshness) {
-          lines.push(`freshness: ${parsed.freshness}`);
+        let daemonStatus: RunResult | null = null;
+        try {
+          daemonStatus = await runner.run(["server", "status"]);
+        } catch {
+          // daemon probe is best-effort; formatDaemonLine degrades to a hint.
         }
-      } else {
-        lines.push("index: not ready");
-        if (parsed.freshness) {
-          lines.push(`freshness: ${parsed.freshness}`);
-        }
+        lines.push(formatDaemonLine(daemonStatus));
+        ui.notify(lines.join("\n"), "info");
+      } finally {
+        ui.setStatus("pi-zg", undefined);
       }
-      if (res.stderr.trim().length > 0) {
-        lines.push(res.stderr.trim());
-      }
-      let daemonStatus: RunResult | null = null;
-      try {
-        daemonStatus = await runner.run(["server", "status"]);
-      } catch {
-        // daemon probe is best-effort; formatDaemonLine degrades to a hint.
-      }
-      lines.push(formatDaemonLine(daemonStatus));
-      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 };
@@ -708,34 +757,36 @@ const registerZgServerCommand = (pi: ExtensionAPI): void => {
       "Start, stop, or inspect the zg daemon: /zg-server on|off|status. The daemon usually starts by itself after the first index build; this is a manual override.",
     getArgumentCompletions: completeFrom(ZG_SERVER_VERBS),
     handler: async (rawArgs, ctx) => {
+      // safeUi: `zg server on/off` spawns and can outlive a reload.
+      const ui = safeUi(ctx);
       const verb = rawArgs?.trim().split(/\s+/u)[0] ?? "";
       if (verb !== "on" && verb !== "off" && verb !== "status") {
-        ctx.ui.notify("Usage: /zg-server [on|off|status]", "error");
+        ui.notify("Usage: /zg-server [on|off|status]", "error");
         return;
       }
       const runner = makeRunner({ cwd: ctx.cwd, env: process.env });
       try {
         const res = await runner.run(["server", verb]);
         if (verb === "status") {
-          ctx.ui.notify(
+          ui.notify(
             formatDaemonLine({ code: res.code, stdout: res.stdout }),
             "info"
           );
           return;
         }
         if (res.code === 0) {
-          ctx.ui.notify(`zg server ${verb}: done`, "info");
+          ui.notify(`zg server ${verb}: done`, "info");
           return;
         }
         const detail = [res.stdout.trim(), res.stderr.trim()]
           .filter((s) => s.length > 0)
           .join("\n");
-        ctx.ui.notify(
+        ui.notify(
           `zg server ${verb} failed (exit ${res.code})${detail ? `:\n${detail}` : ""}`,
           "error"
         );
       } catch {
-        ctx.ui.notify(
+        ui.notify(
           "zg binary not found — it installs on next /zg-index or zg tool use",
           "error"
         );
@@ -754,6 +805,9 @@ const registerZgTool = (pi: ExtensionAPI): void => {
       // `content: []` alongside the progress details.
       // F2: use the per-cwd cache so parallel tool calls on the same root
       // share one ensure-chain (install lock, build lock, failedRoots memo).
+      // safeUi: the tool call can outlive a session reload (print mode,
+      // newSession), and an uncaught stale-ctx throw kills the process.
+      const ui = safeUi(ctx);
       const chain = getOrCreateZg({
         cwd: ctx.cwd,
         env: process.env,
@@ -769,7 +823,7 @@ const registerZgTool = (pi: ExtensionAPI): void => {
               // only in the /zg-index command path — the tool path doesn't
               // overwrite this status mid-build because the createZg onUpdate
               // below deliberately omits setStatus.
-              ctx.ui.setStatus("pi-zg", s.slice(0, 80));
+              ui.setStatus("pi-zg", s.slice(0, 80));
             },
             signal,
           }),
@@ -786,7 +840,7 @@ const registerZgTool = (pi: ExtensionAPI): void => {
       } finally {
         // F5: install-progress status must clear even when ensureBinary
         // throws (ENOENT, install failure, PI_ZG_BIN misconfig).
-        ctx.ui.setStatus("pi-zg", undefined);
+        ui.setStatus("pi-zg", undefined);
       }
 
       if (params.mode !== "rg") {
@@ -853,17 +907,6 @@ const registerZgTool = (pi: ExtensionAPI): void => {
 
 // --- Session-start warmup ---------------------------------------------------
 
-// Structural slice of the pi ctx that event handlers receive, with the exact
-// signatures from ExtensionUIContext so the real ctx assigns cleanly.
-export interface WarmupUi {
-  notify: (message: string, type?: "info" | "warning" | "error") => void;
-  setStatus: (key: string, text: string | undefined) => void;
-}
-export interface WarmupCtx {
-  cwd: string;
-  ui: WarmupUi;
-}
-
 // Kick the ensure-chain in the background at session start so the first zg
 // query hits a ready index. Resource guarantees (user requirement: one build,
 // one server, nothing heavy on startup):
@@ -882,8 +925,9 @@ export const sessionWarmup = async (
   ctx: WarmupCtx,
   env: Record<string, string | undefined> = process.env
 ): Promise<void> => {
+  const ui = safeUi(ctx);
   const onProgress = (s: string): void => {
-    ctx.ui.setStatus("pi-zg", s.slice(0, 80));
+    ui.setStatus("pi-zg", s.slice(0, 80));
   };
   const chain = getOrCreateZg({
     cwd: ctx.cwd,
@@ -901,16 +945,16 @@ export const sessionWarmup = async (
     // sessions. zg enforces a single instance per home (fixed listen port),
     // so this can never stack a second daemon over a previous session's.
     chain.zg.startServerOnce();
-    ctx.ui.setStatus("pi-zg", "checking index…");
+    ui.setStatus("pi-zg", "checking index…");
     const idx = await chain.zg.ensureIndex();
     if (idx.error) {
-      ctx.ui.notify(`zg warmup: ${idx.error}`, "error");
+      ui.notify(`zg warmup: ${idx.error}`, "error");
     }
   } catch {
     // Warmup must never break session start; the tool path surfaces real
     // errors (install failures, PI_ZG_BIN misconfig) to the agent.
   } finally {
-    ctx.ui.setStatus("pi-zg", undefined);
+    ui.setStatus("pi-zg", undefined);
   }
 };
 

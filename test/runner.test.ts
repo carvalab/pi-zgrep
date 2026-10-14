@@ -94,18 +94,15 @@ test("awaitChild does not emit unhandledRejection on late error", async () => {
 // The contract uses an optional method on Runner, so existing test
 // runners without `version()` keep working.
 test("runner.version() returns captured line after successful probe", async () => {
-  // PI_ZG_BIN points to /bin/true so probe's spawn exits 0; we don't
-  // get a real zg version string back, but we get the cache-write
-  // path exercised (any stdout triggers the version cache).
+  // PI_ZG_BIN points at node: portable, exits 0 and prints a version line
+  // for `--version`, so the probe's version-cache path is exercised.
   const runner = makeRunner({
     cwd: process.cwd(),
-    env: { PI_ZG_BIN: "/bin/true" },
+    env: { PI_ZG_BIN: process.execPath },
   });
   const bin = await runner.probe();
-  assert.equal(bin, "/bin/true");
-  // /bin/true prints nothing; cache captures an empty string. The
-  // contract is "captured line is returned verbatim", not "non-empty".
-  assert.equal(typeof runner.version?.(), "string");
+  assert.equal(bin, process.execPath);
+  assert.match(runner.version?.() ?? "", /^v\d+\./u);
 });
 
 test("runner.version() is undefined when probe fails (no cache poisoning)", async () => {

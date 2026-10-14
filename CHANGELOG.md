@@ -4,6 +4,14 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
+## [v0.4.0] - 2026-10-14
+
+- Print-mode runs (`pi -p "…"`) no longer crash with a stale-ctx dump and exit 1. Session warmup is background work that can outlive a short session, and pi invalidates the event ctx when the session ends; the trailing status update then threw an uncaught "This extension ctx is stale" that killed the process. Any non-interactive run of a script or agent harness that shelled out to pi hit this, every time. Fixed for session warmup and for every other path that runs work in the background (the `/zg-index`, `/zg-status`, and `/zg-server` commands, and the tool's install progress) — a background task that outlives its session now simply stops reporting instead of taking the process down.
+- `/zg-status` now says it started, like `/zg-index` does, and shows a status line while it probes. It previously looked like a no-op until the result appeared.
+- `/zg-index` now suggests `--device`, `--model-cache`, and `--allow-remote` in its argument completions. The command already forwarded every flag to `zg index`; these three just never appeared in the palette, which made them hard to discover as workarounds when embedding-model loading misbehaves.
+- CI now runs the embedding-model load test on every job. The reported failure (`MODEL2VEC_LOAD_FAILED`, masked by a `uv_cwd` error) had no coverage.
+- Installs and publishes are pinned to `registry.npmjs.org` via a repo `.npmrc`. Previously the registry followed whatever the machine had configured.
+
 ## [v0.3.0] - 2026-09-03
 
 - New `/zg-server` command: start, stop, or inspect the daemon (`on|off|status`) without leaving pi. The daemon still starts on its own, and session warmup now revives it if it died between sessions, so one daemon serves all sessions (upstream enforces a single instance per home). `/zg-status` shows its real state instead of telling you to go run `zg server status` yourself.

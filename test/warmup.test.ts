@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { sessionWarmup } from "../src/index.ts";
+import { safeUi, sessionWarmup } from "../src/index.ts";
 
 const makeFakeZg = (dir: string, log: string): string => {
   const p = path.join(dir, "zg");
@@ -84,4 +84,83 @@ test("warmup with missing binary: bails with no spawns and no install", async ()
     );
     assert.deepEqual(calls, ["status:cleared"]);
   });
+});
+
+const staleError = (): Error =>
+  new Error("This extension ctx is stale after session replacement or reload");
+
+test("warmup does not throw when the ctx went stale mid-flight (print mode)", async () => {
+  await withTempDir(async (dir) => {
+    const log = path.join(dir, "calls.log");
+    // Mirrors pi in `pi -p`: the session ends while the background build is
+    // still running, so every ctx.ui touch throws from that point on. The
+    // uncaught throw used to exit the process 1.
+    let live = true;
+    const ui = {
+      notify: (): void => {
+        if (!live) {
+          throw staleError();
+        }
+      },
+      setStatus: (): void => {
+        if (!live) {
+          throw staleError();
+        }
+      },
+    };
+    const warm = sessionWarmup(
+      { cwd: dir, ui },
+      { PI_ZG_BIN: makeFakeZg(dir, log) }
+    );
+    live = false;
+    await assert.doesNotReject(warm);
+  });
+});
+
+test("warmup still reports through a live ctx (guard does not swallow early)", async () => {
+  await withTempDir(async (dir) => {
+    const log = path.join(dir, "calls.log");
+    const { calls, ui } = makeUi();
+    await sessionWarmup({ cwd: dir, ui }, { PI_ZG_BIN: makeFakeZg(dir, log) });
+    assert.ok(
+      calls.some((c) => c.startsWith("status:")),
+      "status lines must still surface while the ctx is live"
+    );
+  });
+});
+
+test("safeUi passes through live calls and swallows stale ones", () => {
+  const calls: string[] = [];
+  let live = true;
+  const wrapped = safeUi({
+    ui: {
+      notify: (message: string): void => {
+        calls.push(`notify:${message}`);
+        if (!live) {
+          throw staleError();
+        }
+      },
+      setStatus: (_key: string, text: string | undefined): void => {
+        calls.push(`status:${text ?? "cleared"}`);
+        if (!live) {
+          throw staleError();
+        }
+      },
+    },
+  });
+  wrapped.notify("before");
+  wrapped.setStatus("pi-zg", "indexing…");
+  live = false;
+  assert.doesNotThrow(() => {
+    wrapped.notify("after");
+    wrapped.setStatus("pi-zg", undefined);
+  });
+  // The throw happened *after* the call was recorded by the fake, so the
+  // wrapper really did attempt both.
+  assert.deepEqual(calls, [
+    "notify:before",
+    "status:indexing…",
+    "notify:after",
+    "status:cleared",
+  ]);
 });

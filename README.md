@@ -61,8 +61,9 @@ Results come back as ranked `file:line` lines. The tool result `details` carry t
 
 ## Commands
 
-- `/zg-index [args...]` passes arguments through to `zg index` (for example `--rebuild`). Progress streams in the status line, and the handler notifies you when the build starts and finishes.
-| `/zg-status` shows the resolved binary and version, index readiness and freshness, and the daemon pointer. Run it when something looks off; the output tells you whether the index is missing, possibly stale, or fresh. Like `/zg-index`, it notifies you when it starts and shows progress in the status line while its probes run.
+- `/zg-index [args...]` passes arguments through to `zg index` (for example `--rebuild`). Progress streams in the status line, and the handler notifies you when the build starts and finishes. The palette suggests the common flags, including `--device`, `--model-cache`, and `--allow-remote`.
+- `/zg-status` shows the resolved binary and version, index readiness and freshness, and the daemon state. It notifies you when it starts and shows progress in the status line while its probes run.
+- `/zg-server [on|off|status]` starts, stops, or inspects the daemon. The daemon starts on its own; this is the manual override.
 
 ## How it behaves
 
@@ -76,7 +77,7 @@ A `zg` call that needs the index and does not have one runs `zg index` for you. 
 
 ### A daemon keeps the index fresh
 
-After the first successful build, the extension asks zg to start its background daemon (`zg server on`, loopback-only, detached). The daemon watches the workspace, reconciles the index hourly, and reuses the embedding model across runs. Set `PI_ZG_SERVER` to any non-empty value to opt out and manage the daemon yourself.
+The extension starts zg's background daemon at session start (`zg server on`, loopback-only, detached), and zg allows one daemon per machine, so a running one is reused and a dead one comes back. The daemon watches the workspace, reconciles the index hourly, and reuses the embedding model across runs. `/zg-server` starts, stops, or inspects it. Set `PI_ZG_SERVER` to any non-empty value to opt out and manage the daemon yourself.
 
 ### The agent is nudged toward the right route
 
@@ -109,7 +110,7 @@ On hosts without node-gyp the first attempt can fail on sharp's optional postins
 
 **Parse miss.** If upstream changes its output shape, the tool falls back to raw text passthrough prefixed with a hint to run `/zg-status` and file an issue at [carvalab/pi-zgrep](https://github.com/carvalab/pi-zgrep/issues). The fixtures under `test/fixtures/` are the compat tripwire for the parser.
 
-**Windows: not supported in 0.2.0.** The resolver spawns `zg` directly with `shell: false`, which cannot launch npm's `.cmd` shims. macOS and Linux only.
+**Windows is not supported.** The resolver spawns `zg` directly with `shell: false`, which cannot launch npm's `.cmd` shims. macOS and Linux only.
 
 ## Benchmarks
 
@@ -117,7 +118,7 @@ The retrieval and answer-quality numbers that matter come from upstream's own be
 
 As a local reference we also keep a small latency and hit-rate comparison of zg against ripgrep and GNU grep on this repo's own code. The method and the numbers live in [doc/benchmark.md](doc/benchmark.md); rerun it yourself with `./doc/bench.sh` (130-line script, no dependencies).
 
-## Out of scope in 0.2.0
+## Out of scope
 
 No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rendering, no `@`-mention autocomplete, no bundled skills, no remote embeddings.
 

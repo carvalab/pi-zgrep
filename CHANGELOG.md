@@ -4,6 +4,10 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
+## [v0.4.1] - 2026-10-14
+
+- The README now documents `/zg-server`, the `/zg-index` flag suggestions, and that the daemon starts at session start and is shared across sessions. It also fixes a stray character that broke the `/zg-status` line on the pi.dev package page.
+
 ## [v0.4.0] - 2026-10-14
 
 - Print-mode runs (`pi -p "…"`) no longer crash with a stale-ctx dump and exit 1. Session warmup is background work that can outlive a short session, and pi invalidates the event ctx when the session ends; the trailing status update then threw an uncaught "This extension ctx is stale" that killed the process. Any non-interactive run of a script or agent harness that shelled out to pi hit this, every time. Fixed for session warmup and for every other path that runs work in the background (the `/zg-index`, `/zg-status`, and `/zg-server` commands, and the tool's install progress) — a background task that outlives its session now simply stops reporting instead of taking the process down.

@@ -11,8 +11,6 @@
 // The Runner interface (from ./zg.ts) is the contract; the real impl
 // below owns process lifecycle, signal wiring, and the npm/bun install
 // retry dance.
-
-import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
@@ -21,6 +19,7 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawn } from "cross-spawn";
 import { Type } from "typebox";
 
 import {
@@ -205,6 +204,9 @@ const wireAbortKill = (
     }
   };
   signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) {
+    onAbort();
+  }
   return (): void => {
     signal.removeEventListener("abort", onAbort);
   };
@@ -238,18 +240,21 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
   const startProcess = (
     bin: string,
     args: string[],
-    o?: { cwd?: string }
+    o?: { cwd?: string; detached?: boolean; stdio?: "ignore" }
   ): ChildProcess => {
     // The local engine is a packaged JS entry — run it with the current node
     // instead of relying on exec bits and shebangs. Global and PI_ZG_BIN bins
-    // stay direct spawns.
-    const [cmd, argv] = bin.endsWith(".js")
+    // stay direct spawns. cross-spawn resolves Windows .cmd shims.
+    const [cmd, argv] = /\.[cm]?js$/iu.test(bin)
       ? [process.execPath, [bin, ...args]]
       : [bin, args];
     return spawn(cmd, argv, {
       cwd: o?.cwd ?? opts.cwd,
+      detached: o?.detached,
       env: opts.env,
       shell: false,
+      stdio: o?.stdio,
+      windowsHide: true,
     });
   };
 
@@ -304,6 +309,7 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
   const version = (): string | undefined => versionLine;
 
   const run = (args: string[]): Promise<RunResult> => {
+    opts.signal?.throwIfAborted();
     const bin = probedBin ?? resolveBin();
     const child = startProcess(bin, args);
     const unwire = opts.signal ? wireAbortKill(child, opts.signal) : null;
@@ -327,6 +333,7 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
     args: string[],
     o?: { cwd?: string; onUpdate?: (s: string) => void; signal?: AbortSignal }
   ): Promise<{ code: number }> => {
+    o?.signal?.throwIfAborted();
     const bin = probedBin ?? resolveBin();
     const child = startProcess(bin, args, { cwd: o?.cwd });
     const unwire = o?.signal ? wireAbortKill(child, o.signal) : null;
@@ -342,7 +349,9 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
         const { code } = await Promise.all([
           awaitChild(child),
           linesP,
-          collectStream(child.stderr),
+          o?.onUpdate && child.stderr
+            ? forwardLines(child.stderr, o.onUpdate)
+            : collectStream(child.stderr),
         ]).then(([c]) => ({ code: c as number }));
         return { code };
       } finally {
@@ -367,6 +376,7 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
       env: opts.env,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const linesP =
       opts.onUpdate && child.stdout
@@ -432,11 +442,8 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
       // (Ctrl+C / terminal close). unref() lets the parent exit cleanly while
       // the daemon keeps running. This is the only spawn in the runner that
       // detaches; probe/run/stream stay attached to their parent.
-      const child = spawn(bin, ["server", "on"], {
-        cwd: opts.cwd,
+      const child = startProcess(bin, ["server", "on"], {
         detached: true,
-        env: opts.env,
-        shell: false,
         stdio: "ignore",
       });
       // F1: async spawn failures (ENOENT) emit 'error' on the child; with
@@ -614,7 +621,9 @@ const registerZgIndexCommand = (pi: ExtensionAPI): void => {
       // F6: the runner-level onUpdate wrapper was dead here — /zg-index
       // never installs, so opts.onUpdate is never invoked. Fold setStatus
       // into streamOnUpdate so each build-progress line surfaces live.
-      const parsed = parseIndexCommandArgs(args);
+      const parsed = parseIndexCommandArgs(args, (p) =>
+        existsSync(path.resolve(ctx.cwd, p))
+      );
       if (!parsed.ok) {
         // Don't spawn a doomed build: bare words that aren't existing paths
         // (e.g. "status") die upstream as [ROOT_NOT_FOUND] with exit 1.
@@ -622,6 +631,7 @@ const registerZgIndexCommand = (pi: ExtensionAPI): void => {
           "Usage: /zg-index [--rebuild | --drop --yes | <zg index flags> | <workspace path>]. For index status use /zg-status (or run `zg status` in bash).",
           "error"
         );
+        ui.setStatus("pi-zg", undefined);
         return;
       }
       const runner = makeRunner({ cwd: ctx.cwd, env: process.env });
@@ -825,14 +835,14 @@ const registerZgTool = (pi: ExtensionAPI): void => {
               // below deliberately omits setStatus.
               ui.setStatus("pi-zg", s.slice(0, 80));
             },
-            signal,
           }),
         onUpdate: (s: string): void => {
           onUpdate?.({ content: [], details: { progress: s } });
         },
-        signal,
       });
-      const { runner, zg } = chain;
+      const { zg } = chain;
+      // The ensure-chain is shared; query cancellation belongs to this call.
+      const runner = makeRunner({ cwd: ctx.cwd, env: process.env, signal });
 
       let warning: string | undefined;
       try {
@@ -844,11 +854,17 @@ const registerZgTool = (pi: ExtensionAPI): void => {
       }
 
       if (params.mode !== "rg") {
-        const idx = await zg.ensureIndex();
+        const idx = await zg.ensureIndex({
+          onUpdate: (s: string): void => {
+            onUpdate?.({ content: [], details: { progress: s } });
+          },
+          signal,
+        });
         if (idx.error) {
           return {
             content: [{ text: `zg error: ${idx.error}`, type: "text" }],
             details: { isError: true } as ZgToolDetails,
+            isError: true,
           };
         }
       }
@@ -884,10 +900,23 @@ const registerZgTool = (pi: ExtensionAPI): void => {
             { text: `zg error: ${(error as Error).message}`, type: "text" },
           ],
           details: { isError: true } as ZgToolDetails,
+          isError: true,
         };
       }
 
       const res = await runner.run(args);
+      if (res.code !== 0) {
+        return {
+          content: [
+            {
+              text: `zg error (exit ${res.code}): ${res.stderr.trim() || res.stdout.trim() || "query failed"}`,
+              type: "text",
+            },
+          ],
+          details: { isError: true } as ZgToolDetails,
+          isError: true,
+        };
+      }
       const parsed = parseQueryOutput(res.stdout);
       const body =
         "raw" in parsed

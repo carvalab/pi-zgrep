@@ -18,7 +18,7 @@ export type StatusParse =
   | { raw: string };
 
 const HIT_LINE =
-  /^#(?<idx>\d+)\s+(?:(?<attrs>.+?)\s+)?(?<file>\S+):(?<start>\d+)(?:-(?<end>\d+))?\s*$/u;
+  /^#(?<idx>\d+)\s+(?<attrs>(?:[\w-]+=\S+\s+)*)(?<file>.+):(?<start>\d+)(?:-(?<end>\d+))?\s*$/u;
 const GROUP_HEADER = /^Q\d+\s+\[\w+\]:\s*/u;
 const HITS_LINE = /^hits:\s*\d+\s*$/u;
 const PREVIEW_LINE = /^(?<num>\d+)\t(?<text>.*)$/u;
@@ -30,7 +30,8 @@ const SCORE_ATTR = /\bscore=(?<val>[\d.]+)/u;
 // rg-shaped input: bare path first line, then `^\d+: <text>` (or tab)
 // match blocks. Context lines from `-A/-B/-C` look like `^\d+- <text>`
 // and the `--` group separator sits between ripgrep path groups.
-const RG_PATH_LINE = /^(?<path>[^\s:#][^:#\s]*)$/u;
+const RG_PATH_LINE =
+  /^(?<path>(?!\s*\d+[:-][ \t])(?!#)(?!query groups)(?!Q\d+\s+\[)(?!hits:)(?:[A-Za-z]:[\\/])?[^:\r\n]+)$/u;
 const RG_MATCH_LINE = /^\s*(?<line>\d+):(?<sep>[ \t])(?<text>.*)$/u;
 const RG_CONTEXT_LINE = /^\s*\d+-[ \t]/u;
 const RG_GROUP_SEPARATOR = /^--$/u;
@@ -173,6 +174,10 @@ export const parseQueryOutput = (text: string): QueryParse => {
     }
 
     if (HITS_LINE.test(line)) {
+      i += 1;
+      continue;
+    }
+    if (line === "No matches.") {
       i += 1;
       continue;
     }

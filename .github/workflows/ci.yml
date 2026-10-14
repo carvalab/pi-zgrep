@@ -29,7 +29,10 @@ jobs:
         with:
           path: ~/.zvec-grep/models
           key: zvec-models-${{ runner.os }}-${{ runner.arch }}
-      - run: ZG_TEST_MODEL=1 node --test test/model-load.test.ts
+      # env, not a VAR=value prefix: Windows runs these steps in pwsh.
+      - run: node --test test/model-load.test.ts
+        env:
+          ZG_TEST_MODEL: "1"
 
   # Real pi session against openrouter/free. Skips itself when the secret is
   # absent, so forks without it still pass. One OS is enough: the matrix

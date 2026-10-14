@@ -3,6 +3,7 @@
 Semantic code search for the [pi](https://github.com/earendil-works/pi-coding-agent) coding agent. One tool, four routes (hybrid, BM25, vector, ripgrep), auto-indexed.
 
 [![npm version](https://img.shields.io/npm/v/pi-zgrep)](https://www.npmjs.com/package/pi-zgrep)
+[![npm downloads](https://img.shields.io/npm/dm/pi-zgrep)](https://www.npmjs.com/package/pi-zgrep)
 [![CI](https://img.shields.io/github/actions/workflow/status/carvalab/pi-zgrep/ci.yml)](https://github.com/carvalab/pi-zgrep/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/npm/l/pi-zgrep)](./LICENSE)
 [![Node >= 22.18](https://img.shields.io/node/v/pi-zgrep)](https://nodejs.org)

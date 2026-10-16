@@ -168,3 +168,18 @@ test("safeUi passes through live calls and swallows stale ones", () => {
     "status:cleared",
   ]);
 });
+
+test("warmup in the home directory skips quietly: no index check, no error", async () => {
+  await withTempDir(async (dir) => {
+    const log = path.join(dir, "calls.log");
+    const { calls, ui } = makeUi();
+    await sessionWarmup(
+      { cwd: dir, ui },
+      { PI_ZG_BIN: makeFakeZg(dir, log), PI_ZG_SERVER: "1" },
+      dir
+    );
+    const argv0 = readFileSync(log, "utf-8").trim().split("\n");
+    assert.deepEqual(argv0, ["--version"], "probe only");
+    assert.ok(!calls.some((c) => c.startsWith("notify:")), calls.join("|"));
+  });
+});

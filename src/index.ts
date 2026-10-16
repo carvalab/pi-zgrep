@@ -1,12 +1,14 @@
 // pi-zg: extension factory. Wraps the zg (zvec-grep) CLI as a single tool
-// ("zg") plus two commands (/zg-index, /zg-status) and an opt-out system
-// prompt nudge that steers the agent toward zg for code/content search.
+// ("zg") plus three commands (/zg-index, /zg-status, /zg-server) and opt-out
+// prompt guidelines that steer the agent toward zg for code/content search.
 //
 // File layout:
-//   - args.ts  → CLI arg builders (pure)
-//   - parse.ts → output parsers (pure, fixture-tripwired)
-//   - zg.ts    → ensure chain (pure, testable with a fake runner)
-//   - index.ts → this file: the real Runner + extension factory
+//   - args.ts      → CLI arg builders (pure)
+//   - parse.ts     → output parsers (pure, fixture-tripwired)
+//   - tool.ts      → argument repair, model text, truncation, renderers
+//   - workspace.ts → which index a cwd belongs to (ancestor-index guard)
+//   - zg.ts        → ensure chain (pure, testable with a fake runner)
+//   - index.ts     → this file: the real Runner + extension factory
 //
 // The Runner interface (from ./zg.ts) is the contract; the real impl
 // below owns process lifecycle, signal wiring, and the npm/bun install
@@ -15,12 +17,15 @@ import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { findPackageJSON } from "node:module";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "cross-spawn";
 import { Type } from "typebox";
+import type { Static } from "typebox";
 
 import {
   buildIndexArgs,
@@ -29,8 +34,20 @@ import {
   parseIndexCommandArgs,
   validateQueryInput,
 } from "./args.ts";
-import { parseQueryOutput, parseStatusOutput, renderResults } from "./parse.ts";
-import type { QueryParse } from "./parse.ts";
+import { parseQueryOutput, parseStatusOutput } from "./parse.ts";
+import {
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+  ZgOutputSchema,
+  formatQueryText,
+  prepareZgArguments,
+  renderCallText,
+  renderResultText,
+  toStructured,
+  truncateForModel,
+} from "./tool.ts";
+import type { RenderableResult, ZgToolDetails } from "./tool.ts";
+import { isUnsafeAutoIndexRoot, planWorkspace } from "./workspace.ts";
 import { createZg } from "./zg.ts";
 import type { RunResult, Runner } from "./zg.ts";
 
@@ -88,12 +105,21 @@ const localZgCli = (): string | null => {
 
 // --- Guidance (opt-out via PI_ZG_GUIDANCE) ---------------------------------
 
-export const guidanceText = (): string =>
-  [
-    "Code/content search: prefer the `zg` tool before grep/find. The `zg` tool is a function you call directly — there is no `zg` binary to run from a shell.",
-    "- mode=hybrid (default) for intent or natural-language questions; mode=fts for known symbols/identifiers; mode=vector for paraphrases; mode=rg for exact literal/regex.",
-    "- Fall back to grep/find only when (1) zg returns zero results, (2) the zg tool errors, (3) results report possibly_stale for content just edited this session, or (4) the target is outside the indexed workspace.",
-  ].join("\n");
+// One-line entry for the system prompt's "Available tools" section; pi leaves
+// custom tools out of that list when a tool has no snippet.
+export const PROMPT_SNIPPET =
+  "Search workspace code and content: semantic, BM25, hybrid, or ripgrep, auto-indexed";
+
+// Bullets for the system prompt's guidelines section, added by pi only while
+// the tool is active. Each one names zg, since pi lists them among the
+// guidelines of every other tool.
+export const guidanceLines = (): string[] => [
+  "For code/content search, prefer the `zg` tool before grep/find. `zg` is a tool you call directly; there is no `zg` binary to run from a shell.",
+  "zg modes: hybrid (default) for intent or natural-language questions; fts for known symbols/identifiers; vector for paraphrases; rg for exact literal/regex.",
+  "Fall back from zg to grep/find only when (1) zg returns zero results, (2) the zg tool errors, (3) results report possibly_stale for content just edited this session, or (4) the target is outside the indexed workspace.",
+];
+
+export const guidanceText = (): string => guidanceLines().join("\n");
 
 export const shouldInjectGuidance = (
   env: Record<string, string | undefined>
@@ -515,11 +541,19 @@ export const resetZgCache = (): void => {
 
 // --- Tool: zg ---------------------------------------------------------------
 
-type ZgToolDetails = QueryParse | { isError: true };
-
 const ZgToolParams = Type.Object({
-  glob: Type.Optional(Type.String()),
-  limit: Type.Optional(Type.Number({ maximum: 50, minimum: 1 })),
+  glob: Type.Optional(
+    Type.String({
+      description: "Path glob to include, e.g. src/**; prefix ! to exclude",
+    })
+  ),
+  limit: Type.Optional(
+    Type.Number({
+      description: `Maximum results (default ${DEFAULT_LIMIT})`,
+      maximum: MAX_LIMIT,
+      minimum: 1,
+    })
+  ),
   mode: Type.Optional(
     Type.Union([
       Type.Literal("hybrid"),
@@ -529,7 +563,9 @@ const ZgToolParams = Type.Object({
     ])
   ),
   preview: Type.Optional(
-    Type.Union([Type.Literal("short"), Type.Literal("none")])
+    Type.Union([Type.Literal("short"), Type.Literal("none")], {
+      description: "Snippet size for indexed modes (default short)",
+    })
   ),
   query: Type.String({
     description:
@@ -537,9 +573,14 @@ const ZgToolParams = Type.Object({
     minLength: 1,
   }),
   refresh: Type.Optional(
-    Type.Union([Type.Literal("auto"), Type.Literal("wait")])
+    Type.Union([Type.Literal("auto"), Type.Literal("wait")], {
+      description:
+        "wait = refresh the index before an indexed query (use after edits)",
+    })
   ),
-  type: Type.Optional(Type.String()),
+  type: Type.Optional(
+    Type.String({ description: "ripgrep file type, e.g. ts, py" })
+  ),
 });
 
 // --- Commands ---------------------------------------------------------------
@@ -801,10 +842,26 @@ const registerZgServerCommand = (pi: ExtensionAPI): void => {
   });
 };
 
+const errorResult = (
+  text: string
+): {
+  content: { text: string; type: "text" }[];
+  details: ZgToolDetails;
+  isError: true;
+} => ({
+  content: [{ text, type: "text" }],
+  details: { isError: true },
+  isError: true,
+});
+
 const registerZgTool = (pi: ExtensionAPI): void => {
   pi.registerTool({
+    // Searching never changes the user's files. It may write the gitignored
+    // .zvec-grep/ index and start the local daemon, which a permission gate
+    // should not prompt for. No network: embeddings are local by default.
+    annotations: { openWorldHint: false, readOnlyHint: true },
     description:
-      'Workspace code/content search. Call this tool directly — there is no `zg` binary to shell out to. USE THIS FIRST for code/content questions, before grep/find. Local-first semantic + BM25 + hybrid + ripgrep over the current workspace; excludes node_modules/, .git/, and build outputs; anything outside the workspace is NOT indexed — grep directly for those. Modes: hybrid (default) natural-language intent ("where are auth tokens read?"); fts exact symbols ("PackageUpdate"); vector paraphrases; rg literal/regex ("^export function check") only when fts misses. Fall back to bash grep only when: (1) zero results though the term must exist, (2) this tool errors, (3) result says possibly_stale after you edited it this session, (4) the target is outside the indexed workspace. Don\'t default to bash grep out of habit: a 2s zg call beats a 30s grep reflex.',
+      'Workspace code/content search. Call this tool directly — there is no `zg` binary to shell out to. USE THIS FIRST for code/content questions, before grep/find. Local-first semantic + BM25 + hybrid + ripgrep over the current workspace; excludes node_modules/, .git/, and build outputs; anything outside the workspace is NOT indexed — grep directly for those. Modes: hybrid (default) natural-language intent ("where are auth tokens read?"); fts exact symbols ("PackageUpdate"); vector paraphrases; rg literal/regex ("^export function check") only when fts misses. Fall back to bash grep only when: (1) zero results though the term must exist, (2) this tool errors, (3) result says possibly_stale after you edited it this session, (4) the target is outside the indexed workspace. Don\'t default to bash grep out of habit: a 2s zg call beats a 30s grep reflex. Output is capped at 2000 lines / 50KB; when cut, the full output path is given.',
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       // pi's ToolExecutionComponent reads `result.content` unguarded on every
       // update (for image-block extraction), so partial payloads MUST include
@@ -814,6 +871,14 @@ const registerZgTool = (pi: ExtensionAPI): void => {
       // safeUi: the tool call can outlive a session reload (print mode,
       // newSession), and an uncaught stale-ctx throw kills the process.
       const ui = safeUi(ctx);
+      const mode = params.mode ?? "hybrid";
+      const limit = params.limit ?? DEFAULT_LIMIT;
+      const progress = (s: string): void => {
+        onUpdate?.({
+          content: [],
+          details: { mode, progress: s, query: params.query },
+        });
+      };
       const chain = getOrCreateZg({
         cwd: ctx.cwd,
         env: process.env,
@@ -822,7 +887,7 @@ const registerZgTool = (pi: ExtensionAPI): void => {
             cwd: ctx.cwd,
             env: process.env,
             onUpdate: (s: string): void => {
-              onUpdate?.({ content: [], details: { progress: s } });
+              progress(s);
               // F4: surface install progress on the status bar; cleared once
               // ensureBinary returns. Build progress flows through the same
               // onUpdate channel via createZg, but build uses ctx.ui.setStatus
@@ -832,13 +897,31 @@ const registerZgTool = (pi: ExtensionAPI): void => {
               ui.setStatus("pi-zg", s.slice(0, 80));
             },
           }),
-        onUpdate: (s: string): void => {
-          onUpdate?.({ content: [], details: { progress: s } });
-        },
+        onUpdate: progress,
       });
       const { zg } = chain;
       // The ensure-chain is shared; query cancellation belongs to this call.
       const runner = makeRunner({ cwd: ctx.cwd, env: process.env, signal });
+
+      const input = {
+        glob: params.glob,
+        limit,
+        mode,
+        preview: params.preview ?? "short",
+        query: params.query,
+        refresh: params.refresh,
+        type: params.type,
+      };
+      // F3 (b/d): guard before we shell out (and before any install or
+      // build) so the agent sees a clear tool error instead of an upstream
+      // "missing: --limit, 1" parse failure. Schema minLength: 1 already
+      // covers empty query at the type level; the guard covers the
+      // leading-dash cases TypeBox can't express.
+      try {
+        validateQueryInput(input);
+      } catch (error) {
+        return errorResult(`zg error: ${(error as Error).message}`);
+      }
 
       let warning: string | undefined;
       try {
@@ -849,84 +932,56 @@ const registerZgTool = (pi: ExtensionAPI): void => {
         ui.setStatus("pi-zg", undefined);
       }
 
-      if (params.mode !== "rg") {
-        const idx = await zg.ensureIndex({
-          onUpdate: (s: string): void => {
-            onUpdate?.({ content: [], details: { progress: s } });
-          },
-          signal,
-        });
+      if (mode !== "rg") {
+        const idx = await zg.ensureIndex({ onUpdate: progress, signal });
         if (idx.error) {
-          return {
-            content: [{ text: `zg error: ${idx.error}`, type: "text" }],
-            details: { isError: true } as ZgToolDetails,
-            isError: true,
-          };
+          return errorResult(`zg error: ${idx.error}`);
         }
       }
 
-      const args = buildQueryArgs({
-        glob: params.glob,
-        limit: params.limit ?? 10,
-        mode: params.mode ?? "hybrid",
-        preview: params.preview ?? "short",
-        query: params.query,
-        refresh: params.refresh,
-        type: params.type,
-      });
-
-      // F3 (b/d): guard before we shell out so the agent sees a clear
-      // tool error instead of an upstream "missing: --limit, 1" parse
-      // failure. Schema minLength: 1 already covers empty query at the
-      // type level; the guard covers the leading-dash cases TypeBox
-      // can't express.
-      try {
-        validateQueryInput({
-          glob: params.glob,
-          limit: params.limit ?? 10,
-          mode: params.mode ?? "hybrid",
-          preview: params.preview ?? "short",
-          query: params.query,
-          refresh: params.refresh,
-          type: params.type,
-        });
-      } catch (error) {
-        return {
-          content: [
-            { text: `zg error: ${(error as Error).message}`, type: "text" },
-          ],
-          details: { isError: true } as ZgToolDetails,
-          isError: true,
-        };
-      }
-
-      const res = await runner.run(args);
+      const res = await runner.run(buildQueryArgs(input));
       if (res.code !== 0) {
-        return {
-          content: [
-            {
-              text: `zg error (exit ${res.code}): ${res.stderr.trim() || res.stdout.trim() || "query failed"}`,
-              type: "text",
-            },
-          ],
-          details: { isError: true } as ZgToolDetails,
-          isError: true,
-        };
+        return errorResult(
+          `zg error (exit ${res.code}): ${res.stderr.trim() || res.stdout.trim() || "query failed"}`
+        );
       }
       const parsed = parseQueryOutput(res.stdout);
-      const body =
-        "raw" in parsed
-          ? `zg output (unparsed — upstream format may have changed; run /zg-status and file an issue at carvalab/pi-zgrep):\n${parsed.raw}`
-          : renderResults(parsed);
-      const text = warning ? `${warning}\n${body}` : body;
+      const body = formatQueryText(parsed, { limit, mode });
+      const out = await truncateForModel(
+        warning ? `${warning}\n${body}` : body
+      );
+      const details: ZgToolDetails = {
+        fullOutputPath: out.fullOutputPath,
+        mode,
+        query: params.query,
+        truncated: out.truncated,
+        ...("raw" in parsed
+          ? { raw: parsed.raw }
+          : { results: parsed.results }),
+      };
       return {
-        content: [{ text, type: "text" }],
-        details: parsed as ZgToolDetails,
+        content: [{ text: out.text, type: "text" }],
+        details,
+        structuredContent: toStructured(parsed, out.truncated),
       };
     },
     label: "zg",
     name: "zg",
+    outputSchema: ZgOutputSchema,
     parameters: ZgToolParams,
+    prepareArguments: (args) =>
+      prepareZgArguments(args) as Static<typeof ZgToolParams>,
+    promptGuidelines: shouldInjectGuidance(process.env)
+      ? guidanceLines()
+      : undefined,
+    promptSnippet: PROMPT_SNIPPET,
+    renderCall: (args, theme) => new Text(renderCallText(args, theme), 0, 0),
+    renderResult: (result, options, theme) =>
+      new Text(
+        renderResultText(result as RenderableResult, options, theme),
+        0,
+        0
+      ),
   });
 };
 
@@ -948,7 +1003,8 @@ const registerZgTool = (pi: ExtensionAPI): void => {
 // cross-process lock only if that ever misbehaves.
 export const sessionWarmup = async (
   ctx: WarmupCtx,
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  home: string = homedir()
 ): Promise<void> => {
   const ui = safeUi(ctx);
   const onProgress = (s: string): void => {
@@ -970,6 +1026,16 @@ export const sessionWarmup = async (
     // sessions. zg enforces a single instance per home (fixed listen port),
     // so this can never stack a second daemon over a previous session's.
     chain.zg.startServerOnce();
+    // pi opened in ~ or / with no index: nothing to warm, and the ensure
+    // chain would refuse the build anyway. Skip quietly rather than show an
+    // error at every session start; a zg call there explains the refusal.
+    const plan = planWorkspace(ctx.cwd);
+    if (
+      plan.indexRoot === null &&
+      isUnsafeAutoIndexRoot(plan.buildRoot, home)
+    ) {
+      return;
+    }
     ui.setStatus("pi-zg", "checking index…");
     const idx = await chain.zg.ensureIndex();
     if (idx.error) {
@@ -991,17 +1057,6 @@ const registerSessionWarmup = (pi: ExtensionAPI): void => {
   });
 };
 
-// --- Guidance event ---------------------------------------------------------
-
-const registerGuidance = (pi: ExtensionAPI): void => {
-  pi.on("before_agent_start", (event) => {
-    if (!shouldInjectGuidance(process.env)) {
-      return;
-    }
-    return { systemPrompt: `${event.systemPrompt}\n\n${guidanceText()}` };
-  });
-};
-
 // --- Factory ----------------------------------------------------------------
 
 export default function piZgExtension(pi: ExtensionAPI): void {
@@ -1010,5 +1065,4 @@ export default function piZgExtension(pi: ExtensionAPI): void {
   registerZgStatusCommand(pi);
   registerZgServerCommand(pi);
   registerSessionWarmup(pi);
-  registerGuidance(pi);
 }

@@ -5,6 +5,9 @@
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
       --hide-scrollbars --force-device-scale-factor=1 --window-size=1600,900 \
       --virtual-time-budget=5000 --screenshot=doc/assets/gallery.png doc/assets/gallery.html
+  Social preview (1280x640, 2:1, for the GitHub repo card and link shares):
+    same command with --force-device-scale-factor=0.8 --window-size=1600,800
+      --screenshot=doc/assets/social-2x1.png
   The terminal card is real output from this repo (2026-10-16, zg 0.2.2):
     grep -rn "stdout into structured" src/          -> exit 1, nothing
     zg query "turn engine stdout into structured hits" -g 'src/**' --limit 3
@@ -33,7 +36,7 @@
     --hl: rgba(127, 214, 143, 0.12);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
   body {
     background-color: var(--paper);
     background-image:

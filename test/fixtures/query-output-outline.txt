@@ -1,0 +1,34 @@
+query groups (1):
+Q1 [primary]: turn engine stdout into structured hits
+hits: 3
+
+#1 matchedBy=fts+vector src/parse.ts:138-217
+outline:
+parseQueryOutput = (text: string): QueryParse => {
+
+calls: parseRgOutput, text.split, QUERY_HEADER.test, GROUP_HEADER.test, HITS_LINE.test, HIT_LINE.exec, Number, parseScore, collectPreview, results.push
+matched: 138
+source:
+138	parseQueryOutput
+
+#2 matchedBy=fts+vector src/tool.ts:308-336
+source:
+308	renderHits = (
+309	  d: ZgToolDetails | undefined,
+310	  expanded: boolean,
+311	  theme: RenderTheme
+312	): string => {
+313	  const results = d?.results ?? [];
+314	  if (results.length === 0) {
+315	    return theme.fg("dim", "No matches");
+316	  }
+317	  let text = theme.fg(
+...
+
+#3 matchedBy=fts+vector src/zg.ts:9-13
+source:
+9	interface RunResult {
+10	  code: number;
+11	  stderr: string;
+12	  stdout: string;
+13	}

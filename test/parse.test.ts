@@ -116,3 +116,34 @@ test("rendering is ripgrep-style lines per result", () => {
   });
   assert.match(out, /src\/a\.ts:3-7\s+0\.9\s+export function loadTheme/u);
 });
+
+// zg 0.2.2: function hits carry an outline section with a blank line and a
+// `calls:` list, then `matched:` and `source:`. Before 0.6.0 the parser
+// stopped at the blank line, hit `calls:`, and returned raw for the whole
+// result. Captured from `zg query "turn engine stdout into structured hits"
+// --limit 3 --preview short --mode auto -g 'src/**'` on this repo.
+test("outline blocks (zg 0.2.2 function hits) parse instead of falling to raw", () => {
+  const parsed = parseQueryOutput(
+    readFileSync(
+      new URL("fixtures/query-output-outline.txt", import.meta.url),
+      "utf-8"
+    )
+  );
+  assert.ok("results" in parsed, "must not fall back to raw");
+  assert.deepEqual(
+    parsed.results.map((r) => `${r.file}:${r.lineStart}-${r.lineEnd}`),
+    ["src/parse.ts:138-217", "src/tool.ts:308-336", "src/zg.ts:9-13"]
+  );
+  const [first, second] = parsed.results;
+  assert.equal(
+    first?.snippet?.split("\n")[0],
+    "parseQueryOutput = (text: string): QueryParse => {"
+  );
+  assert.match(first?.snippet ?? "", /calls: parseRgOutput/u);
+  assert.equal(second?.snippet?.split("\n")[0], "renderHits = (");
+  assert.doesNotMatch(
+    second?.snippet ?? "",
+    /^\d+\t/mu,
+    "line numbers stripped"
+  );
+});

@@ -4,6 +4,22 @@ All notable changes to pi-zgrep. Release sections are curated before tagging
 (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
 the raw commit list to rewrite from.
 
+## [v0.6.0] - 2026-10-16
+
+- Each repository now searches its own index. zg resolves the index by looking in the current folder and then in each parent folder, with no stop at a repository, and its builds skip nested git repos. One index left in a parent folder (seen live in `~/Dev`) answered for every repo below it: the status said ready and every semantic query returned the parent's files. A `.git` between the current folder and that parent index is now a boundary, and the repo gets its own index on first use. The first such build runs in direct mode, because the zg 0.2.2 daemon resolves the requested root back to the parent and rebuilds that instead.
+- Function and symbol hits parse again. zg 0.2.2 adds an `outline:` section to those hits, containing a blank line and a `calls:` list. The parser stopped at the blank line, hit `calls:`, and returned the entire result as unparsed raw text. It now reads each hit's block up to the next hit, and a captured fixture pins the shape.
+- Automatic builds never index the home directory or the filesystem root; the tool suggests `mode=rg` there. `/zg-index` still can.
+- Every build passes an explicit root to `zg index`.
+- The tool now uses pi's tool-prompt API. A `promptSnippet` lists it under "Available tools" (pi left it out before), and the routing advice is `promptGuidelines` instead of a `before_agent_start` hook that replaced the whole system prompt every turn. `PI_ZG_GUIDANCE` still opts out.
+- Custom TUI rendering: the call shows mode, query, and filters; the result shows the hit count and paths, with snippets and the full-output path when expanded, and build progress while it runs.
+- Output follows pi's truncation convention (2000 lines / 50KB, 500 characters per line), with the full text saved to a temp file the result names.
+- Zero results say `No matches (mode=…)` with a next route to try, instead of an empty string. A page that fills `limit` says so.
+- `prepareArguments` repairs common argument slips before validation: string or out-of-range `limit`, mode synonyms (`semantic`, `bm25`, `grep`), `null` optionals, and `pattern`/`q` for `query`.
+- The tool declares `readOnlyHint`/`openWorldHint` annotations and an `outputSchema`, and returns `structuredContent` for codemode scripts.
+- Invalid input (a leading `-` query outside `mode=rg`) is rejected before any install, probe, or build.
+- New gallery image for pi.dev and the README, built from real output on this repo (`doc/assets/gallery.html` is the source).
+- Tested against pi 1.3.0, now a dev dependency. `@earendil-works/pi-tui` is a declared peer dependency.
+
 ## [v0.5.0] - 2026-10-14
 
 - Windows support, contributed by Rodrigo Jäger (@rodrigojager). The launcher resolves npm `.cmd` shims and runs packaged `.js`, `.mjs`, and `.cjs` entries through Node, result paths keep spaces, Unicode, and drive letters, and `/zg-index` preserves quoted roots and flag values. CI now runs on Windows across Node 22, 24, and 26.

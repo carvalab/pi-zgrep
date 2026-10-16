@@ -29,7 +29,7 @@
     "test:pi": "node tools/pi-integration.mjs"
   },
   "type": "module",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Semantic, BM25, hybrid, and grep search for the pi coding agent, powered by the zg (zvec-grep) engine. One tool, auto-indexed, local-first. A semantic upgrade over ripgrep for code questions.",
   "author": "carvalab",
   "keywords": [
@@ -84,6 +84,6 @@
     "skills": [
       "./skills"
     ],
-    "image": "https://raw.githubusercontent.com/zvec-ai/zvec-grep/main/.github/assets/benchmark-overall-retrieval-indexed-v3.png"
+    "image": "https://raw.githubusercontent.com/carvalab/pi-zgrep/main/doc/assets/gallery.png"
   }
 }

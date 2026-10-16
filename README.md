@@ -8,6 +8,8 @@ Semantic code search for the [pi](https://github.com/earendil-works/pi-coding-ag
 [![License: MIT](https://img.shields.io/npm/l/pi-zgrep)](./LICENSE)
 [![Node >= 22.18](https://img.shields.io/node/v/pi-zgrep)](https://nodejs.org)
 
+![pi-zgrep: grep finds 0 matches for "stdout into structured", zg finds src/parse.ts:138 parseQueryOutput](https://raw.githubusercontent.com/carvalab/pi-zgrep/main/doc/assets/gallery.png)
+
 ## What your agent gets
 
 - It finds code by meaning. "Where do we parse the upstream output format?" works before anyone knows the symbol names, which is exactly an agent's situation in an unfamiliar repo.
@@ -30,12 +32,17 @@ doc/plans/2026-09-02-pi-zg-extension.md:353-426  heading: Task 5: Output parser 
 
 Nothing in that query is a literal identifier in the codebase. Ripgrep scores zero on questions like this one; see [Benchmarks](#benchmarks) for where the numbers live.
 
-## What's new in 0.4
+## What's new in 0.6
 
-- Print mode works. `pi -p "..."` used to exit 1 with a crash dump, because background work (the session warmup, an index build, an install) outlived the short session and then touched a context pi had already invalidated. It now stops reporting when the session is gone instead of taking the process down. Scripts and agent harnesses that shell out to pi were hitting this on every run.
-- `/zg-status` tells you it started. It used to sit silent until its probes finished, so it looked like nothing happened.
-- `/zg-server on|off|status` controls the daemon from inside pi, and the daemon now starts with the session and is shared across sessions instead of waiting for the first build.
-- `/zg-index` suggests `--device`, `--model-cache`, and `--allow-remote` as you type. The command always forwarded them; they were just undiscoverable.
+- Each repository searches its own index. zg looks for an index in the current folder and then in each parent folder, so an index left in a parent folder (say `~/Dev`) used to capture every repo below it: the status said ready and semantic queries returned the parent's files. Now a repo inside an indexed parent gets its own index on first use.
+- Session start no longer builds an index of your home directory or the filesystem root. Use `mode=rg` there, or `/zg-index` if you really want one.
+- The tool appears in pi's "Available tools" list, and its routing advice rides on pi's tool guidelines. The old hook that replaced the whole system prompt each turn is gone.
+- Function hits no longer break parsing. zg 0.2.2 prints an `outline:` section (with a blank line and a `calls:` list) for code symbols, and the parser used to give up and return the whole result as raw text. It now reads each hit up to the next one.
+- Results render in the TUI: the call shows mode and query, the result shows the hit count and `file:line` list, with snippets when expanded.
+- Large output follows pi's convention: capped at 2000 lines / 50KB, long lines cut to 500 characters, and the full text saved to a temp file the model can read.
+- Zero results say "No matches" with a next step instead of an empty string, and a full page says the limit was reached.
+- Common argument slips no longer cost a retry: `limit: "5"`, `mode: "semantic"` or `"grep"`, `null` optionals, `pattern` instead of `query`.
+- The tool is marked read-only, so permission extensions don't ask before every search, and it returns `structuredContent` for codemode scripts.
 
 ## Install
 
@@ -65,7 +72,11 @@ Local-first semantic + BM25 + hybrid + ripgrep search over the current workspace
 | `refresh`  | `auto` \| `wait`                      | `auto`     | `wait` forces `--refresh wait` after editing a file in the same session. |
 | `preview`  | `short` \| `none`                     | `short`    | Include a one-line code preview per result.                              |
 
-Results come back as ranked `file:line` lines. The tool result `details` carry the parsed JSON, kept for future TUI rendering.
+Results come back as ranked `file:line  score  first-preview-line` lines. Zero results return `No matches (mode=…)` with a suggested next route, and a page that fills `limit` says so. Output is capped the way pi's own tools cap it (2000 lines or 50KB, 500 characters per line); when anything is cut, the full text is saved to a temp file and the result names it.
+
+Before validation the tool repairs common argument slips: numeric strings and out-of-range values for `limit` (clamped to 1-50), mode synonyms such as `semantic` → `vector`, `bm25` → `fts`, `grep`/`ripgrep` → `rg`, `null` or empty optionals, and `pattern` or `q` in place of `query`.
+
+For programs, the result carries `structuredContent` (`{ results: [{ file, lineStart, lineEnd?, score?, snippet? }], truncated, raw? }`, declared as the tool's `outputSchema`), and `details` holds the same results for the TUI renderer. The tool is annotated `readOnlyHint: true`, `openWorldHint: false`: it never changes your files (the gitignored `.zvec-grep/` index aside) and embeds locally.
 
 ## Commands
 
@@ -83,13 +94,19 @@ When a session starts, the extension checks for the binary and, in the backgroun
 
 A `zg` call that needs the index and does not have one runs `zg index` for you. Build progress streams in the tool output, and Esc aborts the build (the child receives SIGKILL). Partial builds resume incrementally on the next attempt. A failed build surfaces a memoized error on later calls in the same session; start a new session or run `/zg-index`, which bypasses the memo. `mode=rg` queries skip the index entirely.
 
+### Each repository gets its own index
+
+zg finds an index by looking in the current folder and then in each parent folder, and it does not stop at a repository. Its builds skip nested git repos. So an index in a parent folder (for example one built when pi was started in `~/Dev`) used to answer for every repo below it, with the parent's files. The extension now treats a `.git` (folder or file) between the current folder and that parent index as a boundary. A repo inside an indexed folder gets its own index on first use, built with an explicit root. A subfolder of an indexed project with no repo boundary in between keeps using the project's index, as before.
+
+Automatic builds never index your home directory or the filesystem root, since that index would cover everything below it. The tool returns an error that suggests `mode=rg` instead. `/zg-index` can still build one on purpose.
+
 ### A daemon keeps the index fresh
 
 The extension starts zg's background daemon at session start (`zg server on`, loopback-only, detached), and zg allows one daemon per machine, so a running one is reused and a dead one comes back. The daemon watches the workspace, reconciles the index hourly, and reuses the embedding model across runs. `/zg-server` starts, stops, or inspects it. Set `PI_ZG_SERVER` to any non-empty value to opt out and manage the daemon yourself.
 
 ### The agent is nudged toward the right route
 
-On every agent turn, the extension appends a short system-prompt note telling the model to prefer `zg` over `grep`/`find`, with mode guidance: `hybrid` for intent, `fts` for symbols, `vector` for paraphrases, `rg` for exact matches. It also says when to fall back: zero results, a tool error, or a `possibly_stale` flag on content the agent just edited. Set `PI_ZG_GUIDANCE` to any non-empty value to disable the nudge.
+The tool registers a one-line `promptSnippet`, so pi lists it under "Available tools", and three `promptGuidelines` that pi adds to the system prompt's guidelines while the tool is active: prefer `zg` over `grep`/`find`; `hybrid` for intent, `fts` for symbols, `vector` for paraphrases, `rg` for exact matches; and when to fall back (zero results, a tool error, or a `possibly_stale` flag on content the agent just edited). Set `PI_ZG_GUIDANCE` to any non-empty value to drop the guidelines; the snippet stays.
 
 ## Configuration
 
@@ -99,7 +116,7 @@ All env vars are read from the pi process environment (set them before launching
 |-----------------------|---------------------------------------------------------------------------------------------|
 | `PI_ZG_BIN`           | Path to the `zg` binary. Skips packaged-dependency and PATH lookup. If set but the binary is not executable there, the extension errors out (no fallback). |
 | `PI_ZG_AUTO_INSTALL`  | Never auto-install. Error surfaces the exact manual command.                                |
-| `PI_ZG_GUIDANCE`      | Do not append the system-prompt nudge.                                                      |
+| `PI_ZG_GUIDANCE`      | Do not add the routing guidelines to the system prompt.                                     |
 | `PI_ZG_SERVER`        | Do not start the zg daemon after the first build.                                           |
 
 ## Troubleshooting
@@ -118,6 +135,10 @@ On hosts without node-gyp the first attempt can fail on sharp's optional postins
 
 **Parse miss.** If upstream changes its output shape, the tool falls back to raw text passthrough prefixed with a hint to run `/zg-status` and file an issue at [carvalab/pi-zgrep](https://github.com/carvalab/pi-zgrep/issues). The fixtures under `test/fixtures/` are the compat tripwire for the parser.
 
+**Semantic results come from another project.** An older version may have left an index in a parent folder. Upgrading fixes the lookup; to remove the stray index, run `/zg-status` from that folder to confirm its root, then delete its `.zvec-grep/` directory.
+
+**Another extension also registers `zg`.** `pi-zvec-grep-ext` and `@krosskinetic/pi-zg` use the same tool name, and pi keeps whichever extension loads first. Install only one. The same goes for upstream's own pi integration (`zg --install --target pi`, merged after zg 0.2.2), which adds zg's MCP tools and its own prompt block: use either it or this extension.
+
 **Windows is supported**, thanks to [Rodrigo Jäger (@rodrigojager)](https://github.com/rodrigojager). The launcher resolves npm's `.cmd` shims, runs packaged `.js`, `.mjs`, and `.cjs` entries through Node, and hides background consoles. Quoted index paths and flag values are preserved, and results keep filenames with spaces, Unicode, and drive letters.
 
 ## Benchmarks
@@ -132,7 +153,7 @@ The package ships a `pi-zgrep-search` skill, written by [Rodrigo Jäger (@rodrig
 
 ## Out of scope
 
-No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rendering, no `@`-mention autocomplete, no remote embeddings.
+No override of pi's native `grep`/`find`, no MCP-client mode, no `@`-mention autocomplete, no remote embeddings.
 
 ## Development
 
@@ -140,7 +161,7 @@ No override of pi's native `grep`/`find`, no MCP-client mode, no custom TUI rend
 git clone https://github.com/carvalab/pi-zgrep.git
 cd pi-zgrep
 npm install
-npm run test            # unit tests (parser, arg builder, ensure chain, guidance)
+npm run test            # unit tests (parser, arg builder, ensure chain, workspace plan, tool surface)
 ZG_TEST_E2E=1 npm run test:e2e   # real zg engine required on PATH
 npm run test:pi          # real pi session against openrouter/free; needs OPENROUTER_API_KEY
 ```

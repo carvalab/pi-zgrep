@@ -22,10 +22,21 @@ into `zg` argv, parses stdout back into a structured result.
 - **Degrade, don't crash.** A parse miss falls through to raw passthrough
   prefixed with a hint (`/zg-status` + issues link). Never throw at the user
   over a shape change.
-- **No MCP in pi.** Upstream ships an MCP server; pi has no MCP host. This
-  extension's tool functions are the reference mapping of upstream's MCP tool
-  surface onto a native pi tool. When upstream adds or changes MCP tools,
-  mirror them here (see `src/index.ts` tool registration).
+- **Native tool, not MCP.** pi has a built-in MCP host now (`builtin:mcp`,
+  `pi.registerMcpServer`), and upstream merged its own pi integration after
+  0.2.2 (`zg --install --target pi`, upstream PR #250: writes pi's `mcp.json`
+  plus a guidance block, served by the shared daemon). This extension stays a
+  native pi tool: it owns auto-install, warmup, the ancestor-index guard,
+  argument repair, truncation and TUI rendering, none of which the MCP route
+  has. When upstream adds or changes MCP tools, mirror the useful ones here
+  (see `src/index.ts` tool registration), and keep the README's "use one or
+  the other" note current once upstream releases its integration.
+- **Use pi's tool API, not prompt surgery.** Routing advice lives in
+  `promptSnippet` / `promptGuidelines` on the tool. Do not return
+  `systemPrompt` from `before_agent_start`: pi treats that as replacing the
+  whole prompt for the run.
+- **Tool name `zg` is shared.** `pi-zvec-grep-ext` and `@krosskinetic/pi-zg`
+  also register `zg`; pi keeps the first registration silently.
 - **Zero build.** Ships plain TypeScript (`src/*.ts`); pi loads `.ts`
   extensions directly. No compile step, no dist.
 
@@ -34,8 +45,19 @@ into `zg` argv, parses stdout back into a structured result.
 - **Where to check for updates:** GitHub releases at
   `zvec-ai/zvec-grep` (npm publishes in lockstep as `@zvec/zvec-grep`,
   historically every 1–2 weeks).
-- **Current compat baseline: zg 0.2.1** (2026-09-01). Fixtures, arg-builder
-  expectations, and the e2e notes in `test/e2e.test.ts` capture that version.
+- **Current compat baseline: zg 0.2.2** (packaged dependency; fixtures were
+  captured on 0.2.1 and still pass on 0.2.2). Fixtures, arg-builder
+  expectations, and the e2e notes in `test/e2e.test.ts` capture that shape.
+  Upstream PR #251 (unreleased) changes `possibly_stale` reporting and `zg
+  index` status output: expect fixture drift on the next release.
+- **Ancestor-index behavior (zg 0.2.2).** Upstream resolves the index by
+  walking from cwd to the filesystem root and taking the first `.zvec-grep/`
+  (`engine/service/root.js`), with no repo boundary; builds skip nested git
+  repos; a bare `zg index` targets that ancestor; and the daemon (auto/server
+  mode) redirects even an explicit child root back to the ancestor.
+  `src/workspace.ts` plans around it: a `.git` between cwd and the ancestor
+  index means "build our own", and that first build runs `--mode direct`.
+  Re-check all four facts when upstream releases (e2e covers them).
 - **Packaged dependency wins over PATH, on purpose.** Resolution order is
   `PI_ZG_BIN` → packaged `@zvec/zvec-grep` → `zg` on PATH → global install.
   Fixtures and the parser are pinned to the packaged version, so a global
@@ -73,7 +95,7 @@ integrity are unchanged, so the registry setting alone will not clean them.
 npm run lint           # oxlint
 npm run format:check   # oxfmt
 npm run typecheck      # tsc --noEmit
-npm test               # 48 hermetic unit tests — no zg binary needed
+npm test               # ~100 hermetic unit tests — no zg binary needed
 ZG_TEST_E2E=1 npm run test:e2e   # real zg binary, hermetic (scratch dir, cached model)
 ```
 
@@ -124,6 +146,12 @@ didn't register — check for a load error at startup), or the tool errors
 Without `--session-dir`, pi writes session logs to
 `~/.pi/agent/sessions/<flattened-cwd>/<timestamp>_<uuid>.jsonl`; the
 `toolCall`/`toolResult` records with `"name":"zg"` are what to grep.
+
+Known failure mode (hit 2026-10-16): semantic results come from another
+project. A stray parent-folder index (it was `~/Dev/.zvec-grep`) answered
+for every repo below it. Fixed in 0.6.0 by the ancestor-index guard; confirm
+with `zg status` (the second line is the resolved root) and delete the stray
+`.zvec-grep/` if it isn't wanted.
 
 Known failure mode (hit 2026-09-03): tool returns `zg index failed … zvec
 file metadata storage does not exist`. That is a stale/broken gitignored
@@ -192,10 +220,16 @@ To check the published tarball rather than the local build, swap step 2 for
   (`awaitChild` races close/error; never await the loser — `once(child,
   "error")` never settles on clean exits)
 - `src/args.ts` — tool args → `zg` argv (rg routes drop `--preview`/`--mode`)
+- `src/tool.ts` — `prepareArguments` repair, model text (empty/limit hints),
+  pi truncation + full-output file, `structuredContent`, TUI renderers
+- `src/workspace.ts` — ancestor-index guard: which index a cwd belongs to,
+  which root a build targets, no auto-index of home or filesystem root
 - `src/parse.ts` — `zg` stdout → structured result; raw passthrough on miss
 - `src/zg.ts` — global install (npm -g, bun fallback, `--ignore-scripts`
   retry), PATH probe, version capture
-- `test/` — fixture contract tests + `e2e.test.ts` (gated by `ZG_TEST_E2E=1`)
+- `test/` — fixture contract tests, `tool.test.ts` (registration + execute()
+  against a fake `.mjs` engine), `workspace.test.ts`, and `e2e.test.ts`
+  (gated by `ZG_TEST_E2E=1`, includes the ancestor-index regression)
 
 ## Release
 

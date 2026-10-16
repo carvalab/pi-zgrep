@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { test } from "node:test";
 
 import { createZg } from "../src/zg.ts";
@@ -369,4 +370,79 @@ test("getOrCreateZg returns distinct chains for distinct cwds", async () => {
   });
   assert.notEqual(a, b, "different cwds get different chains");
   resetZgCache();
+});
+
+// Ancestor-index guard (see src/workspace.ts and test/workspace.test.ts).
+const parentDir = path.resolve("/work/dev");
+const repoDir = path.join(parentDir, "repo");
+const existsIn =
+  (...paths: string[]) =>
+  (p: string): boolean =>
+    paths.map((x) => path.resolve(x)).includes(path.resolve(p));
+
+test("ready status from a parent folder's index across a repo boundary still builds this repo", async () => {
+  const r = fakeRunner();
+  const zg = createZg(r, {
+    exists: existsIn(
+      path.join(parentDir, ".zvec-grep", "manifest.json"),
+      path.join(repoDir, ".git")
+    ),
+    root: repoDir,
+  });
+  const res = await zg.ensureIndex();
+  assert.deepEqual(res, {});
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "index"),
+    [["index", repoDir, "--mode", "direct"]],
+    "build must name the repo root and bypass the daemon, which redirects it to the parent"
+  );
+});
+
+test("ready status with no repo boundary trusts the parent index (monorepo subfolder)", async () => {
+  const r = fakeRunner();
+  const zg = createZg(r, {
+    exists: existsIn(path.join(parentDir, ".zvec-grep", "manifest.json")),
+    root: path.join(parentDir, "packages", "a"),
+  });
+  await zg.ensureIndex();
+  assert.deepEqual(r.calls, []);
+});
+
+test("cold build always passes an explicit root", async () => {
+  const r = fakeRunner({
+    probeStatus: (): Promise<{
+      code: number;
+      stderr: string;
+      stdout: string;
+    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+  });
+  const zg = createZg(r, { exists: () => false, root: repoDir });
+  await zg.ensureIndex();
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "index"),
+    [["index", repoDir]]
+  );
+});
+
+test("never auto-builds an index in the home directory", async () => {
+  const home = path.resolve("/home/me");
+  const r = fakeRunner({
+    probeStatus: (): Promise<{
+      code: number;
+      stderr: string;
+      stdout: string;
+    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+  });
+  const zg = createZg(r, { exists: () => false, home, root: home });
+  const res = await zg.ensureIndex();
+  assert.match(res.error ?? "", /not auto-indexing .*home directory/u);
+  assert.match(res.error ?? "", /mode=rg/u);
+  assert.deepEqual(r.calls, [], "no build and no daemon start");
+});
+
+test("a ready index in the home directory is still used", async () => {
+  const home = path.resolve("/home/me");
+  const r = fakeRunner();
+  const zg = createZg(r, { exists: () => false, home, root: home });
+  assert.deepEqual(await zg.ensureIndex(), {});
 });

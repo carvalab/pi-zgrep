@@ -35,11 +35,18 @@ const ok = process.env.ZG_TEST_MODEL === "1";
       ? [process.execPath, [cli]]
       : [cli, []];
 
-    const index = spawnSync(cmd, [...prefix, "index", dir, "--debug"], {
-      cwd: dir,
-      encoding: "utf-8",
-      timeout: 540_000,
-    });
+    // --mode direct: load the model in this process. With a daemon running
+    // (any dev machine), auto mode hands the build to it, which tests the
+    // daemon's model load instead and prints a different summary.
+    const index = spawnSync(
+      cmd,
+      [...prefix, "index", dir, "--debug", "--mode", "direct"],
+      {
+        cwd: dir,
+        encoding: "utf-8",
+        timeout: 540_000,
+      }
+    );
     const out = `${index.stdout ?? ""}\n${index.stderr ?? ""}`;
     assert.equal(
       index.status,

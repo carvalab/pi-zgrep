@@ -37,12 +37,22 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { buildQueryArgs } from "../src/args.ts";
+import { makeRunner } from "../src/index.ts";
+import { createZg } from "../src/zg.ts";
 
 const ok = process.env.ZG_TEST_E2E === "1";
 const scratch = (): string => {
@@ -124,3 +134,79 @@ const scratch = (): string => {
     );
   }
 });
+
+// Regression, live 2026-10-16: a stray ~/Dev/.zvec-grep captured every repo
+// below it. Upstream walks up to the nearest index with no repo boundary, and
+// its builds skip nested git repos, so the child reported "ready" and every
+// semantic query returned the parent's files. The ensure chain must build
+// the child its own index (explicit root) and the query must then hit it.
+(ok ? test : test.skip)(
+  "e2e: a repo under an indexed parent folder gets its own index",
+  async (t) => {
+    const parent = mkdtempSync(`${tmpdir()}/pi-zg-e2e-parent-`);
+    t.after(() => rmSync(parent, { force: true, recursive: true }));
+    writeFileSync(
+      path.join(parent, "notes.ts"),
+      "export const gardenPlan = 'tomato harvest schedule';\n"
+    );
+    const child = path.join(parent, "repo");
+    mkdirSync(path.join(child, ".git"), { recursive: true });
+    cpSync(
+      fileURLToPath(new URL("fixtures/sample-project", import.meta.url)),
+      child,
+      { recursive: true }
+    );
+    const env = { ...process.env, PI_ZG_SERVER: "1" };
+    const parentIndex = spawnSync("zg", ["index", parent], {
+      cwd: parent,
+      encoding: "utf-8",
+      env,
+    });
+    assert.equal(parentIndex.status, 0, `parent index: ${parentIndex.stderr}`);
+    const before = spawnSync("zg", ["status", "--check-ready"], {
+      cwd: child,
+      encoding: "utf-8",
+      env,
+    });
+    assert.equal(before.status, 0, "precondition: upstream reports ready");
+
+    const runner = makeRunner({ cwd: child, env });
+    const zg = createZg(runner, { env, root: child });
+    assert.deepEqual(await zg.ensureIndex(), {});
+    assert.ok(existsSync(path.join(child, ".zvec-grep", "manifest.json")));
+
+    const r = await runner.run(
+      buildQueryArgs({
+        limit: 5,
+        mode: "hybrid",
+        preview: "short",
+        query: "where is the theme restored",
+      })
+    );
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /hello\.ts/u);
+    assert.doesNotMatch(r.stdout, /notes\.ts/u, "parent's file leaked in");
+  }
+);
+
+(ok ? test : test.skip)(
+  "e2e: cold repo builds through the chain with an explicit root, then stays trusted",
+  async (t) => {
+    const dir = scratch();
+    t.after(() => rmSync(dir, { force: true, recursive: true }));
+    const env = { ...process.env, PI_ZG_SERVER: "1" };
+    const runner = makeRunner({ cwd: dir, env });
+    const lines: string[] = [];
+    const zg = createZg(runner, {
+      env,
+      onUpdate: (s) => lines.push(s),
+      root: dir,
+    });
+    assert.deepEqual(await zg.ensureIndex(), {});
+    assert.ok(existsSync(path.join(dir, ".zvec-grep", "manifest.json")));
+    // Second call: status ready on our own index, no rebuild.
+    lines.length = 0;
+    assert.deepEqual(await zg.ensureIndex(), {});
+    assert.deepEqual(lines, [], "ready index must not rebuild");
+  }
+);

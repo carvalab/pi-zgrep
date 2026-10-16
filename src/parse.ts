@@ -94,6 +94,17 @@ const parseRgOutput = (text: string): QueryParse | null => {
   return null;
 };
 
+// Section labels upstream puts inside a hit block (cli/format/context.js).
+// They frame content; they are not content.
+const BLOCK_LABELS = new Set(["outline:", "source:"]);
+
+// One hit's block runs until the next hit header or query group header.
+// zg 0.2.2 blocks can hold metadata (`status:`, `symbol:`, `heading:`), an
+// `outline:` section that itself contains blank lines and `calls:`, a
+// `matched:` range, and `source:` lines numbered `N<TAB>text`. The snippet
+// keeps every content line in order (numbers stripped), so its first line is
+// the most specific label upstream printed: stale status, symbol, heading,
+// or the first outline/source line.
 const collectPreview = (
   lines: string[],
   start: number
@@ -102,24 +113,16 @@ const collectPreview = (
   next: number;
 } => {
   let j = start;
-  if (j < lines.length && lines[j] === "source:") {
-    j += 1;
-  }
   const previewLines: string[] = [];
   while (j < lines.length) {
     const pl = lines[j] ?? "";
-    if (pl === "") {
+    if (GROUP_HEADER.test(pl) || HIT_LINE_FRONT.test(pl)) {
       break;
     }
-    if (GROUP_HEADER.test(pl)) {
-      break;
+    if (pl !== "" && !BLOCK_LABELS.has(pl)) {
+      const pm = PREVIEW_LINE.exec(pl);
+      previewLines.push(pm?.groups?.text ?? pl);
     }
-    if (HIT_LINE_FRONT.test(pl)) {
-      break;
-    }
-    const pm = PREVIEW_LINE.exec(pl);
-    const snippetLine = pm?.groups?.text ?? pl;
-    previewLines.push(snippetLine);
     j += 1;
   }
   const snippet = previewLines.length > 0 ? previewLines.join("\n") : undefined;

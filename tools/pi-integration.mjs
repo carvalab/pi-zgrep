@@ -62,9 +62,9 @@ const run = spawnSync(
     "--provider",
     "openrouter",
     "--model",
+    // No --thinking flag: openrouter/free can route to a model that requires
+    // reasoning, and "off" then fails with a 400 before the tool is called.
     "openrouter/free",
-    "--thinking",
-    "off",
     "--session-dir",
     sessionDir,
     "--name",

@@ -24,11 +24,11 @@ Start with `limit: 5`, a concise query and the narrowest useful `glob`. Use `typ
 
 ## Use only necessary evidence
 
-The tool renders paths, line ranges, optional scores and the first preview line. `preview: "none"` requests the engine's minimal preview (engine 0.2.2 may still return one anchor line); this option does not control rg context. If a required detail is missing, use native `read` for a small range around the cited lines. There is no `workspace_expand` tool.
+The tool renders paths, line ranges, optional scores and the first preview line. Zero hits come back as `No matches (mode=…)` with a suggested next route; a page that fills `limit` says so. Long output is cut at 2000 lines / 50KB (500 characters per line) and names a temp file holding the full text; read that file only for the part you need. `preview: "none"` requests the engine's minimal preview (engine 0.2.2 may still return one anchor line); this option does not control rg context. If a required detail is missing, use native `read` for a small range around the cited lines. There is no `workspace_expand` tool.
 
 After edits, use `refresh: "wait"` for an indexed query that needs the updated index. Otherwise keep the default `auto`. Before editing, read current source if the result may be stale. A ranking score is not proof; ranked or limited results cannot establish absence or completeness. Confirm exhaustive claims with scoped native `rg`.
 
-On errors, missing coverage or irrelevant results, immediately use native `rg`/`grep` or structural search. Do not repeat failed semantic queries or delegate merely to locate files. Stop as soon as sufficient evidence is found; refine only when a new anchor makes the query materially better.
+In a home directory or filesystem root the tool refuses to build an index; use `mode: "rg"` there. On errors, missing coverage or irrelevant results, immediately use native `rg`/`grep` or structural search. Do not repeat failed semantic queries or delegate merely to locate files. Stop as soon as sufficient evidence is found; refine only when a new anchor makes the query materially better.
 
 ## Index and commands
 

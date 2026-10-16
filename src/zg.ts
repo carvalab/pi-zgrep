@@ -3,6 +3,8 @@
 // pure logic + interface, fully mocked-testable — no child_process here.
 
 import { buildIndexArgs, buildStatusArgs } from "./args.ts";
+import { isUnsafeAutoIndexRoot, planWorkspace } from "./workspace.ts";
+import type { WorkspacePlan } from "./workspace.ts";
 
 export interface RunResult {
   code: number;
@@ -56,6 +58,10 @@ export interface Runner {
 
 export interface ZgOpts {
   env?: Record<string, string | undefined>;
+  // Injectable for tests: filesystem probe and home directory used to plan
+  // which index a query belongs to (see ./workspace.ts).
+  exists?: (p: string) => boolean;
+  home?: string;
   onUpdate?: (s: string) => void;
   root: string;
   signal?: AbortSignal;
@@ -77,6 +83,16 @@ const nonEmpty = (v?: string): boolean => typeof v === "string" && v.length > 0;
  * surfaces the original `zg status` text instead of starting another doomed
  * build. The retry-on-cold-start path is one attempt per root per session.
  */
+// `zg index` argv after the subcommand. The root is always explicit: a bare
+// `zg index` targets the nearest ancestor index, which may belong to a parent
+// folder rather than this repo. A first build across a repo boundary also
+// forces `--mode direct`, because the daemon (auto/server modes) resolves the
+// requested root back to the ancestor's workspace and rebuilds that instead
+// (verified against zg 0.2.2). Once the repo has its own index, the nearest
+// lookup finds it and later builds go through the daemon as usual.
+export const boundaryBuildArgs = (plan: WorkspacePlan): string[] =>
+  plan.trustStatus ? [plan.buildRoot] : [plan.buildRoot, "--mode", "direct"];
+
 export const createZg = (runner: Runner, opts: ZgOpts) => {
   let installP: Promise<unknown> | undefined;
   let buildP: Promise<unknown> | undefined;
@@ -169,6 +185,7 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
   };
 
   const runBuild = async (
+    buildArgs: string[],
     hooks: Pick<ZgOpts, "signal" | "onUpdate"> = {}
   ): Promise<void> => {
     // F2: buffer the last ~10 progress lines so a failed build can surface
@@ -186,7 +203,7 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
           userOnUpdate(s);
         }
       : undefined;
-    const res = await runner.stream(buildIndexArgs(), {
+    const res = await runner.stream(buildIndexArgs(buildArgs), {
       cwd: opts.root,
       onUpdate: wrappedOnUpdate,
       signal: hooks.signal ?? opts.signal,
@@ -223,10 +240,13 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     hooks: Pick<ZgOpts, "signal" | "onUpdate"> = {}
   ): Promise<{ error?: string }> => {
     hooks.signal?.throwIfAborted();
+    const plan = planWorkspace(opts.root, { exists: opts.exists });
     const st = runner.probeStatus
       ? await runner.probeStatus()
       : await runner.run(buildStatusArgs());
-    if (st.code === 0) {
+    // A ready status from a parent folder's index (across a repo boundary)
+    // says nothing about this repo: build its own index instead.
+    if (st.code === 0 && plan.trustStatus) {
       return {};
     }
     // F1: a concurrent call already started a build for this session — just
@@ -250,13 +270,18 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
         error: `zg index is not ready (previous build attempt failed). zg status said: ${st.stdout || st.stderr}`,
       };
     }
+    if (isUnsafeAutoIndexRoot(plan.buildRoot, opts.home)) {
+      return {
+        error: `not auto-indexing ${plan.buildRoot}: it is a home directory or filesystem root, and an index there would capture every folder below it. Use mode=rg here, start pi inside a project folder, or run /zg-index to index it on purpose.`,
+      };
+    }
     // Synchronously assign buildP before any await so concurrent riders see
     // it set and join the in-flight build instead of falling into the
     // failedRoots memo branch above. failedRoots is mutated only inside the
     // wrapper — after the build has actually settled.
     buildP = (async (): Promise<unknown> => {
       try {
-        await runBuild(hooks);
+        await runBuild(boundaryBuildArgs(plan), hooks);
         startServerOnce();
       } catch (error) {
         failedRoots.add(opts.root);

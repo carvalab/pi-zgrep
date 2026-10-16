@@ -1,0 +1,148 @@
+<!doctype html>
+<!--
+  Source for doc/assets/gallery.png, the pi.dev gallery image (pi.image).
+  Regenerate:
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+      --hide-scrollbars --force-device-scale-factor=1 --window-size=1600,900 \
+      --virtual-time-budget=5000 --screenshot=doc/assets/gallery.png doc/assets/gallery.html
+  Social preview (1280x640, 2:1, for the GitHub repo card and link shares):
+    same command with --force-device-scale-factor=0.8 --window-size=1600,800
+      --screenshot=doc/assets/social-2x1.png
+  The terminal card is real output from this repo (2026-10-16, zg 0.2.2):
+    grep -rn "stdout into structured" src/          -> exit 1, nothing
+    zg query "turn engine stdout into structured hits" -g 'src/**' --limit 3
+  The gallery shows this at 152x94 with object-fit: cover, so keep the
+  content inside the 90px side margins and readable at that size.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pi-zgrep gallery</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;600;700&display=block" rel="stylesheet">
+<style>
+  :root {
+    --paper: #ece8df;
+    --grid: rgba(40, 36, 28, 0.045);
+    --ink: #22252c;
+    --muted: #6d665a;
+    --term: #15171c;
+    --term-line: #2a2e37;
+    --dim: #8a909c;
+    --text: #d9dde5;
+    --accent: #f2c66d;
+    --ok: #7fd68f;
+    --bad: #ef7b6b;
+    --hl: rgba(127, 214, 143, 0.12);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100vw; height: 100vh; overflow: hidden; }
+  body {
+    background-color: var(--paper);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 32px 32px;
+    color: var(--ink);
+    font-family: "Instrument Serif", Georgia, serif;
+    display: grid;
+    grid-template-columns: 610px 1fr;
+    gap: 44px;
+    align-items: center;
+    padding: 0 96px;
+  }
+  .eyebrow {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 21px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 26px;
+  }
+  h1 {
+    font-style: italic;
+    font-weight: 400;
+    font-size: 134px;
+    white-space: nowrap;
+    line-height: 0.9;
+    letter-spacing: -0.02em;
+  }
+  .sub {
+    font-size: 36px;
+    line-height: 1.22;
+    color: #3b3e46;
+    margin-top: 34px;
+    max-width: 600px;
+  }
+  .install {
+    display: inline-block;
+    margin-top: 40px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 24px;
+    background: var(--ink);
+    color: #f4f1ea;
+    padding: 14px 22px;
+    border-radius: 10px;
+  }
+  .install b { color: var(--accent); font-weight: 600; }
+  .term {
+    background: var(--term);
+    border-radius: 20px;
+    box-shadow: 0 40px 80px -30px rgba(30, 24, 12, 0.55), 0 0 0 1px rgba(0,0,0,0.25);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 20.5px;
+    line-height: 1.55;
+    color: var(--text);
+    overflow: hidden;
+    font-variant-ligatures: none;
+  }
+  .bar {
+    display: flex; gap: 10px; padding: 18px 24px;
+    border-bottom: 1px solid var(--term-line);
+  }
+  .bar i { width: 14px; height: 14px; border-radius: 50%; background: #3a3f4a; }
+  .pane { padding: 26px 30px 30px; }
+  .cmd { color: var(--dim); }
+  .cmd .q { color: var(--text); }
+  .none {
+    margin-top: 6px;
+    font-size: 25px;
+    color: var(--bad);
+    font-weight: 600;
+  }
+  hr { border: 0; border-top: 1px dashed var(--term-line); margin: 26px 0 24px; }
+  .call { white-space: nowrap; }
+  .call .t { font-weight: 700; color: #ffffff; }
+  .call .m { color: var(--dim); }
+  .call .a { color: var(--accent); }
+  .hits { color: var(--ok); font-weight: 600; font-size: 25px; margin: 8px 0 10px; }
+  .row { display: flex; gap: 16px; padding: 7px 12px; margin: 0 -12px; border-radius: 8px; white-space: nowrap; }
+  .row .p { color: var(--text); min-width: 196px; }
+  .row .s { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+  .row.top { background: var(--hl); }
+  .row.top .p { color: var(--ok); font-weight: 600; }
+  .row.top .s { color: var(--text); }
+</style>
+</head>
+<body>
+  <section>
+    <div class="eyebrow">pi-zgrep &middot; for pi</div>
+    <h1>Search code<br>by meaning.</h1>
+    <p class="sub">Semantic, BM25, hybrid and ripgrep search in one pi tool. It indexes your repo and runs locally.</p>
+    <div class="install">pi install <b>npm:pi-zgrep</b></div>
+  </section>
+  <section class="term" aria-label="grep finds nothing, zg finds the parser">
+    <div class="bar"><i></i><i></i><i></i></div>
+    <div class="pane">
+      <div class="cmd">$ grep -rn <span class="q">"stdout into structured"</span> src/</div>
+      <div class="none">0 matches</div>
+      <hr>
+      <div class="call"><span class="t">zg </span><span class="m">hybrid </span><span class="a">"turn engine stdout into structured hits"</span></div>
+      <div class="hits">3 hits</div>
+      <div class="row top"><span class="p">src/parse.ts:138</span><span class="s">parseQueryOutput = (text: string) =&gt; {</span></div>
+      <div class="row"><span class="p">src/tool.ts:308</span><span class="s">renderHits = (</span></div>
+      <div class="row"><span class="p">src/zg.ts:9</span><span class="s">interface RunResult {</span></div>
+    </div>
+  </section>
+</body>
+</html>

@@ -190,6 +190,8 @@ npm run test:pi          # real pi session against openrouter/free; needs OPENRO
 
 Fixtures under `test/fixtures/` are captured from real zg 0.3.0 runs and act as the compat tripwire for both the arg builder and the parser. To regenerate one, delete it and re-run the argv in the `test/fixtures/NOTES.md` table (0.3.0 flags), or copy from a fresh zg run against `test/fixtures/sample-project/`. The Task 3 capture commands in `doc/plans/2026-09-02-pi-zg-extension.md` predate 0.3.0 (`zg query --help`, `zg status`, `zg index`) and yield the old shapes.
 
+Tested against pi 1.5.0. `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are dev dependencies on `^1.5.0` and stay `*` in `peerDependencies`, so any pi version still loads the package. pi 1.5 validates tool arguments with `@earendil-works/pi-schema` instead of TypeBox; the `zg` schema is plain JSON Schema and validates unchanged, and `prepareArguments` still repairs the shapes models send before validation runs.
+
 Lint and format are wired through ultracite (oxlint + oxfmt): `npm run lint`, `npm run format` (writes), `npm run format:check` (CI gate).
 
 ## License

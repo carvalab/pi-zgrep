@@ -169,10 +169,14 @@ const isNativeExecutable = (file: string): boolean => {
 };
 
 const ensureExecutable = (file: string, mode: number): void => {
-  // Any execute bit set? (Bitwise operators are lint-banned, so mask by
-  // division: the exec bits are bits 6-8, i.e. mode / 0o100 mod 8.)
-  const execBits = Math.floor(mode / 0o100) % 8;
-  if (process.platform === "win32" || execBits !== 0) {
+  // Is the binary executable by its owner — the user who spawns it? That is the
+  // low bit of the owner digit. The earlier test compared the whole owner digit
+  // against zero, so a 0o644 payload (owner `rw-`: the ordinary archive that
+  // lost its exec bit) counted as executable and was never fixed; spawn then
+  // failed with EACCES and the engine silently fell back to PATH. Bitwise
+  // operators are lint-banned, so the digit is isolated by division.
+  const ownerDigit = Math.floor(mode / 0o100) % 8;
+  if (process.platform === "win32" || ownerDigit % 2 !== 0) {
     return;
   }
   // Some archives lose the exec bit; the package dir is ours to fix.

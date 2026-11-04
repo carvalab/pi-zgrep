@@ -1,0 +1,7 @@
+  Coverage    ████████████████░░░░  75%  3 / 4 files (needs update)
+
+  Embedding   local/potion-code-16m-v2
+              256 dimensions · cosine
+  FTS         tokenizer=jieba filters=lowercase
+
+  Storage     .zvec-grep/index

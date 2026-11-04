@@ -27,6 +27,9 @@ All notable changes to pi-zgrep. Release sections are curated before tagging (us
 
 - The install-scenario matrix — bundled engine, rejected 0.2.1, omitted optional deps — is pinned by tests, so a resolution regression fails CI instead of shipping.
 - The first index on a fresh repo no longer fails with `ZG.ENGINE.NOT_FOUND`: a build that starts from nothing passes `--embedding` explicitly, resolved from `ZVEC_GREP_EMBEDDING`, then `PI_ZG_EMBEDDING`, then the local default `local/potion-code-16m-v2`.
+- Session warmup has a lifecycle. A reload (`/new`, resume) or a shutdown now cancels the warmup it replaces instead of leaving the previous `zg --index` running and pushing progress into a dead session, and a cancelled build is no longer memoized as a failed index — that memo made every later call in the new session answer `previous build attempt failed` and never index again. Thanks to Rodrigo Jäger (@rodrigojager).
+- A usable but stale index is served instead of rebuilt. `zg --status --check-ready` exits nonzero with `(needs update)` as soon as files wait for a refresh, which used to mean a blocking rebuild at session start; zg 0.3.0 answers every indexed query from that index anyway, stamping each hit `status: possibly_stale`, so the daemon refreshes it in the background instead. `refresh: "wait"` forces the refresh for one query and `/zg-index` still rebuilds on demand. Thanks to Rodrigo Jäger (@rodrigojager).
+- A failed `zg --index` always reports zg's own output. The last progress lines were buffered only when the caller passed a progress callback, so the one build that has no such callback — the session warmup — failed with a bare exit code. Thanks to Rodrigo Jäger (@rodrigojager).
 
 ## [v0.6.0] - 2026-10-16
 

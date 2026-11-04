@@ -358,8 +358,9 @@ test("registers one zg tool with snippet, guidelines, annotations and renderers"
     "zg-server",
     "zg-status",
   ]);
-  // Guidance now rides on promptGuidelines; no whole-prompt replacement.
-  assert.deepEqual(cap.events, ["session_start"]);
+  // Guidance now rides on promptGuidelines; no whole-prompt replacement. The
+  // only lifecycle hooks are the warmup's: start it, and cancel it on shutdown.
+  assert.deepEqual(cap.events, ["session_start", "session_shutdown"]);
 });
 
 test("every guideline names zg (pi lists them among all tools' rules)", () => {

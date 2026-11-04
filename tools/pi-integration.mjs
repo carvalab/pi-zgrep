@@ -19,8 +19,9 @@
 // handcrafted session entries instead.
 //
 // A failed session is classified before it is allowed to fail the job:
-//   provider-side — HTTP 4xx/5xx from the provider, 429, a model that demands
-//   reasoning, no assistant message, or a model that never called any tool — is
+//   provider-side — HTTP 4xx/5xx from the provider, 429, an upstream stream
+//   error, a model that demands reasoning, no assistant message, or a model that
+//   never called any tool (even after zg returned the fixture) — is
 //   retried once on the backup model and, if that also fails provider-side, ends
 //   as "INCONCLUSIVE: <reason>" with exit 0 plus a line in $GITHUB_STEP_SUMMARY:
 //   the package was never exercised, so the run proves nothing either way.
@@ -223,6 +224,10 @@ const REASONING_REQUIRED =
   /reasoning is mandatory|reasoning (?:is )?required/iu;
 const LOAD_ERROR =
   /failed to load (?:the )?(?:extension|package)|cannot find module/iu;
+// The model's own infra can fail without an HTTP status: pi then exits 1 with
+// e.g. "Upstream error from Near AI: Unexpected token ... expecting ...".
+const UPSTREAM_ERROR =
+  /\bupstream (?:error|failure|unavailable|overloaded)\b|\berror from (?:the )?(?:upstream|provider)\b|\bprovider (?:error|returned an error)\b/iu;
 
 // The first line of pi's own output that blames the provider, or null.
 export const providerEvidence = (output) => {
@@ -239,6 +244,13 @@ export const providerEvidence = (output) => {
   );
   if (http !== undefined) {
     return `the provider returned an error: ${http.slice(0, 200)}`;
+  }
+  // An upstream/model-infra error can arrive without an HTTP status: pi exits 1
+  // with e.g. "Upstream error from Near AI: Unexpected token ...". That is the
+  // provider stream, not something the extension can influence.
+  const upstream = lines.find((line) => UPSTREAM_ERROR.test(line));
+  if (upstream !== undefined) {
+    return `the provider's upstream failed: ${upstream.slice(0, 200)}`;
   }
   return null;
 };
@@ -270,7 +282,16 @@ export const evaluateRun = ({ status, output, entries }) => {
     );
   }
   if (hit !== undefined) {
-    // The engine answered correctly, so a nonzero exit is the package's fault.
+    // The engine answered correctly, so a nonzero exit is normally the package's
+    // fault. Not when pi blames the provider, though: a stream error from the
+    // model's own infra says nothing about the extension, and the hit already
+    // proved the engine ran.
+    if (status !== 0) {
+      const blamed = providerEvidence(output);
+      if (blamed !== null) {
+        return { kind: "provider", reason: blamed };
+      }
+    }
     return status === 0
       ? null
       : extensionFailure(
@@ -496,6 +517,20 @@ const main = () => {
           1,
           "",
           "provider",
+        ],
+        [
+          "fixture hit, pi exits 1 on an upstream error",
+          [promptEntry, zgResult([{ file: "hello.ts" }])],
+          1,
+          "Upstream error from Near AI: Unexpected token 200002 while expecting start token 200006",
+          "provider",
+        ],
+        [
+          "fixture hit, pi exits 1 with no provider blame",
+          [promptEntry, zgResult([{ file: "hello.ts" }])],
+          1,
+          "",
+          "extension",
         ],
         [
           "no fixture hit",

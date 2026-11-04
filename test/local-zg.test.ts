@@ -37,9 +37,15 @@ const withTempDir = async (
 };
 
 // A platform package shaped like the published one: an executable payload plus
-// the checksums.json the resolver verifies. The payload is a shell script
-// (an ELF header cannot be executed in a test), but it is native-style: exec
-// bit set, spawned directly through its shebang — never `node <file>.js`.
+// the checksums.json the resolver verifies. On POSIX the payload is a shell
+// script (an ELF header cannot be executed in a test), but it is native-style:
+// exec bit set, spawned directly through its shebang — never `node <file>.js`.
+// Windows cannot start a shebang script at all — spawn() there needs a real PE
+// image — so the fake payload is a `.cjs` file, which the runner detects by
+// extension and runs through node (src/index.ts startProcess). Same resolve →
+// verify → spawn → version-gate path, on both hosts.
+const PAYLOAD = process.platform === "win32" ? "zg.cjs" : "zg";
+
 const installFakeEngine = (dir: string, version: string): string => {
   const scopeDir = path.join(dir, "node_modules", "@zvec");
   const metaDir = path.join(scopeDir, "zvec-grep");
@@ -63,7 +69,7 @@ const installFakeEngine = (dir: string, version: string): string => {
     path.join(metaDir, "platforms.json"),
     JSON.stringify([
       {
-        binary: "zg",
+        binary: PAYLOAD,
         cpu: process.arch,
         os: process.platform,
         package: PLATFORM_PACKAGE,
@@ -78,10 +84,12 @@ const installFakeEngine = (dir: string, version: string): string => {
     path.join(metaDir, "bin", "zg.exe"),
     '#!/bin/sh\necho "zvec-grep native binary was not materialized during npm install." >&2\nexit 1\n'
   );
-  const cli = path.join(platformDir, "bin", "zg");
+  const cli = path.join(platformDir, "bin", PAYLOAD);
   writeFileSync(
     cli,
-    `#!/bin/sh\ncase "$1" in\n  --version) echo "${version}" ;;\nesac\nexit 0\n`
+    PAYLOAD === "zg"
+      ? `#!/bin/sh\ncase "$1" in\n  --version) echo "${version}" ;;\nesac\nexit 0\n`
+      : `if (process.argv[2] === "--version") { console.log(${JSON.stringify(version)}); }\n`
   );
   chmodSync(cli, 0o755);
   const payload = readFileSync(cli);
@@ -89,7 +97,7 @@ const installFakeEngine = (dir: string, version: string): string => {
     path.join(platformDir, "checksums.json"),
     JSON.stringify({
       files: {
-        "bin/zg": {
+        [`bin/${PAYLOAD}`]: {
           bytes: statSync(cli).size,
           sha256: createHash("sha256").update(payload).digest("hex"),
         },

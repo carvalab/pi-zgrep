@@ -330,16 +330,21 @@ const notReadyStatus =
       stdout: `  Coverage    Unavailable (${note})\n`,
     });
 
+// planWorkspace resolves the root, so the argv carries the host's absolute
+// form: `/x` on POSIX, `D:\x` on Windows. Compare against path.resolve so the
+// expectation is not POSIX-only.
+const RESOLVED_ROOT = path.resolve("/x");
+
 test("first index names the default model; PI_ZG_EMBEDDING overrides it", async () => {
   // 0.3.0 argv: `--index [root] --embedding <model>` — the root is always
   // explicit so a build can never be redirected to an ancestor's workspace.
   const first = fakeRunner({
     probeStatus: notReadyStatus("index not configured"),
   });
-  await createZg(first, { env: {}, root: "/x" }).ensureIndex();
+  await createZg(first, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
   assert.deepEqual(
     first.calls.filter((c) => c[0] === "--index"),
-    [["--index", "--embedding", "local/potion-code-16m-v2", "/x"]]
+    [["--index", "--embedding", "local/potion-code-16m-v2", RESOLVED_ROOT]]
   );
 
   const viaEnv = fakeRunner({
@@ -347,24 +352,26 @@ test("first index names the default model; PI_ZG_EMBEDDING overrides it", async 
   });
   await createZg(viaEnv, {
     env: { PI_ZG_EMBEDDING: "local/pi-choice" },
-    root: "/x",
+    root: RESOLVED_ROOT,
   }).ensureIndex();
   assert.deepEqual(
     viaEnv.calls.filter((c) => c[0] === "--index"),
-    [["--index", "--embedding", "local/pi-choice", "/x"]]
+    [["--index", "--embedding", "local/pi-choice", RESOLVED_ROOT]]
   );
 });
 
 test("stale and rebuild-required indexes refresh without --embedding", async () => {
   const cases: [string, string[]][] = [
-    ["needs update", ["--index", "/x"]],
-    ["rebuild required", ["--index", "/x", "--rebuild"]],
+    ["needs update", ["--index", RESOLVED_ROOT]],
+    ["rebuild required", ["--index", RESOLVED_ROOT, "--rebuild"]],
   ];
   const runners = cases.map(([note]) =>
     fakeRunner({ probeStatus: notReadyStatus(note) })
   );
   await Promise.all(
-    runners.map((r) => createZg(r, { env: {}, root: "/x" }).ensureIndex())
+    runners.map((r) =>
+      createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex()
+    )
   );
   for (const [i, [note, expected]] of cases.entries()) {
     assert.deepEqual(

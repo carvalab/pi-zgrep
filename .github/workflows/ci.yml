@@ -43,9 +43,9 @@ jobs:
         env:
           ZG_TEST_MODEL: "1"
 
-  # Real pi session against openrouter/free. Skips itself when the secret is
-  # absent, so forks without it still pass. One OS is enough: the matrix
-  # above already covers Windows.
+  # Real pi session against a pinned free OpenRouter model. Skips itself when
+  # the secret is absent, so forks without it still pass. One OS is enough: the
+  # matrix above already covers Windows.
   pi:
     runs-on: ubuntu-latest
     steps:

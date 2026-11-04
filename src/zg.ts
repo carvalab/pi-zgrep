@@ -37,6 +37,11 @@ export interface Runner {
   // optional form `runner.version?.()` but every real runner implements it.
   version?: () => string | undefined;
 
+  // Optional accessor for the binary probe() accepted. The tool path builds a
+  // per-call runner (it owns that call's abort signal) and seeds it with this,
+  // so a query can never run a candidate the version gate rejected.
+  binary?: () => string | undefined;
+
   // Optional diagnosis for the last failed probe: which candidate binaries
   // were rejected and which version each one reported. The real runner gates
   // on `zg --version` >= 0.3.0 (0.2.x had a different CLI), so a failure here

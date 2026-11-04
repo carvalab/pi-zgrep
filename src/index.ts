@@ -507,6 +507,10 @@ const wireAbortKill = (
 // --- Real Runner ------------------------------------------------------------
 
 interface MakeRunnerOpts {
+  // Binary probe() already accepted (the shared ensure-chain's winner). Seeded
+  // into probedBin so this runner never falls back to resolveBin(), which knows
+  // nothing about the 0.3.0 version gate.
+  bin?: string;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   onUpdate?: (s: string) => void;
@@ -519,7 +523,9 @@ interface MakeRunnerOpts {
 }
 
 export const makeRunner = (opts: MakeRunnerOpts): Runner => {
-  let probedBin: string | undefined;
+  // A seeded binary counts as probed: probe() short-circuits on it and every
+  // spawn uses it, exactly as if this runner had run `--version` itself.
+  let probedBin: string | undefined = opts.bin;
   // F7: closure-scoped version cache populated by probe. createZg's
   // probeAndVersion uses runner.version?.() to skip the redundant
   // `--version` spawn (probe already paid for it).
@@ -817,6 +823,7 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
   };
 
   return {
+    binary: (): string | undefined => probedBin,
     install,
     probe,
     probeIssue: issue,
@@ -1305,8 +1312,6 @@ export const registerZgTool = (pi: ExtensionAPI): void => {
         onUpdate: progress,
       });
       const { zg } = chain;
-      // The ensure-chain is shared; query cancellation belongs to this call.
-      const runner = makeRunner({ cwd: ctx.cwd, env: process.env, signal });
 
       const input = {
         glob: params.glob,
@@ -1352,6 +1357,17 @@ export const registerZgTool = (pi: ExtensionAPI): void => {
         }
       }
 
+      // The shared chain owns the install/build locks; the query keeps this
+      // call's cancellation, so its runner is per-call — seeded with the binary
+      // the chain's probe accepted, because a fresh runner resolves by
+      // preference order alone (resolveBin) and would execute a candidate the
+      // 0.3.0 version gate had just rejected.
+      const runner = makeRunner({
+        bin: chain.runner.binary?.(),
+        cwd: ctx.cwd,
+        env: process.env,
+        signal,
+      });
       const res = await runner.run(buildQueryArgs(input));
       if (res.code !== 0) {
         return errorResult(

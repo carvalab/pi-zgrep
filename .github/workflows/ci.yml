@@ -48,12 +48,6 @@ jobs:
   # matrix above already covers Windows.
   pi:
     runs-on: ubuntu-latest
-    # TEMPORARY probe matrix: picks the model to pin. Reverted before merge.
-    strategy:
-      fail-fast: false
-      matrix:
-        model:
-          - nvidia/nemotron-3-ultra-550b-a55b:free
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -64,21 +58,3 @@ jobs:
       - run: npm run test:pi
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          PI_ZG_IT_MODEL: ${{ matrix.model }}
-      # TEMPORARY negative proof: the script must exit 1 and name the zg error.
-      - name: Negative proof (must fail, extension-side)
-        if: matrix.model == 'nvidia/nemotron-3-ultra-550b-a55b:free'
-        run: |
-          set +e
-          node tools/pi-integration.mjs > "$RUNNER_TEMP/negative.log" 2>&1
-          status=$?
-          echo "negative run exit=${status}"
-          sed -n '1,25p' "$RUNNER_TEMP/negative.log"
-          echo "---- lines naming the failure:"
-          grep -nE "negative proof|zg tool result is an error|AssertionError" "$RUNNER_TEMP/negative.log" || true
-          test "$status" -ne 0
-          grep -q "zg tool result is an error" "$RUNNER_TEMP/negative.log"
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          PI_ZG_IT_MODEL: ${{ matrix.model }}
-          PI_ZG_IT_NEGATIVE: "1"

@@ -23,6 +23,7 @@ Re-capture with the argv below against a scratch copy of `sample-project/`.
 | `query-output-none.txt`    | `zg --fts loadTheme --limit 5 --preview none --color never --mode auto`                                  | 0    |
 | `query-output-rg.txt`      | `zg --rg loadTheme --limit 5 --color never`                                                              | 0    |
 | `query-no-matches.txt`     | `zg --rg zzz-no-such-symbol --limit 5 --color never`                                                     | 0    |
+| `query-output-stale.txt`   | `zg --hybrid "where is the theme restored" --limit 10 --preview short --color never --mode auto`, captured with `2>&1` right after appending a comment to `hello.ts` (index now behind the worktree) | 0 |
 
 Those argv are the 0.3.0 capture equivalents of the builder argv, not its
 literal output: the captures pinned `--limit 5` (the tool default is 10) and,

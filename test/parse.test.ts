@@ -127,6 +127,29 @@ test("status parser returns raw for input it cannot recognize", () => {
   }
 });
 
+// 0.3.0 appends a stale-index trailer when the index is behind the worktree:
+// `status: possibly_stale` on each hit, then a run-level block
+// (`results: served_from_current_index`, `background_refresh: idle (n/m)`).
+// Those keys are trailer metadata, not hits, so the parser must consume them
+// instead of bailing the whole listing to {raw}.
+test("stale-index trailer lines parse instead of falling back to raw", () => {
+  const parsed = parseQueryOutput(fixture("query-output-stale.txt"));
+  assert.equal(
+    "results" in parsed,
+    true,
+    `parse fell back to raw: ${JSON.stringify(parsed).slice(0, 200)}`
+  );
+  if ("results" in parsed) {
+    assert.equal(parsed.results.length, 1);
+    assert.deepEqual(parsed.results[0], {
+      file: "hello.ts",
+      lineEnd: 4,
+      lineStart: 2,
+      snippet: 'function loadTheme(): string {\n  return "dark";\n}',
+    });
+  }
+});
+
 test("rendering is one ripgrep-style line per result", () => {
   const out = renderResults({
     results: [

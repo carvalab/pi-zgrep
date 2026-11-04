@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 
+import { getOrCreateZg, resetZgCache } from "../src/index.ts";
 import { createZg } from "../src/zg.ts";
 import type { Runner } from "../src/zg.ts";
-// getOrCreateZg + resetZgCache exported from src/index.ts. F2: parallel
-// tool calls on the same root must share one ensure-chain instance
-// (installP / buildP / failedRoots), so makeRunner+createZg per
+// F2: parallel tool calls on the same root must share one ensure-chain
+// instance (installP / buildP / failedRoots), so makeRunner+createZg per
 // execute doesn't break the memoized-error / lock guarantees.
 
 const fakeRunner = (
@@ -98,7 +98,7 @@ test("failed build memo: second ensure surfaces status text instead of rebuildin
     // Index build goes through `stream` (per spec: long-running commands use
     // stream with onUpdate + signal + cwd). Make it fail so the session-scoped
     // memo engages.
-    stream: (args: string[]): Promise<{ code: number }> => {
+    stream: (args) => {
       if (args[0] === "--index") {
         n += 1;
         return Promise.resolve({ code: 1 });
@@ -181,17 +181,11 @@ test("ensureBinary does not re-spawn --version after a successful probe", async 
 
 test("failed build surfaces last progress lines from onUpdate tail", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
     // Failing build: drives onUpdate so the tail buffer captures the lines
     // zg would have printed, then exits non-zero so runBuild throws.
-    stream: (
-      args: string[],
-      o?: { onUpdate?: (s: string) => void }
-    ): Promise<{ code: number }> => {
+    stream: (args, o) => {
       if (args[0] === "--index") {
         o?.onUpdate?.("progress line 1");
         o?.onUpdate?.("progress line 2");
@@ -239,12 +233,9 @@ test("install runs but zg still missing afterwards => still not on PATH error", 
 test("riders joining a failing build both get {error} and exactly one build runs", async () => {
   let builds = 0;
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
-    stream: (args: string[]): Promise<{ code: number }> => {
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    stream: (args) => {
       if (args[0] === "--index") {
         builds += 1;
         return Promise.resolve({ code: 1 });
@@ -266,7 +257,6 @@ test("riders joining a failing build both get {error} and exactly one build runs
 // call → install fires per call, build races per call, and the
 // README's "memoized error" claim is false.
 test("getOrCreateZg returns the same ensure chain for the same cwd", async () => {
-  const { getOrCreateZg, resetZgCache } = await import("../src/index.ts");
   resetZgCache();
   let probeCalls = 0;
   let installCalls = 0;
@@ -282,11 +272,8 @@ test("getOrCreateZg returns the same ensure chain for the same cwd", async () =>
       probeCalls += 1;
       return Promise.resolve(installCalls > 0 ? "/usr/bin/zg" : null);
     },
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
     run: (): Promise<{ code: number; stderr: string; stdout: string }> =>
       Promise.resolve({ code: 0, stderr: "", stdout: "" }),
     startServer: (): Promise<void> => Promise.resolve(),
@@ -382,8 +369,7 @@ test("stale and rebuild-required indexes refresh without --embedding", async () 
   }
 });
 
-test("getOrCreateZg returns distinct chains for distinct cwds", async () => {
-  const { getOrCreateZg, resetZgCache } = await import("../src/index.ts");
+test("getOrCreateZg returns distinct chains for distinct cwds", () => {
   resetZgCache();
   const a = getOrCreateZg({
     cwd: "/repo-a",
@@ -437,11 +423,8 @@ test("ready status with no repo boundary trusts the parent index (monorepo subfo
 
 test("cold build always passes an explicit root", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { exists: () => false, root: repoDir });
   await zg.ensureIndex();
@@ -454,11 +437,8 @@ test("cold build always passes an explicit root", async () => {
 test("never auto-builds an index in the home directory", async () => {
   const home = path.resolve("/home/me");
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { exists: () => false, home, root: home });
   const res = await zg.ensureIndex();

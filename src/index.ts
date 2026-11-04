@@ -379,8 +379,8 @@ export const formatDaemonLine = (
       .match(/^Server:\s*(?<state>.+)$/mu)
       ?.groups?.state?.trim() ?? "ready";
   if (state !== "ready") {
-    // plain `zg server status` exits 0 even when stopped — the state text is
-    // the only signal.
+    // plain `zg --server status` exits 0 even when stopped — the state text
+    // is the only signal.
     return `daemon: ${state} — ${start}`;
   }
   const pid = serverStatus.stdout.match(/^PID:\s*(?<pid>\d+)/mu)?.groups?.pid;
@@ -1032,7 +1032,8 @@ export const registerZgIndexCommand = (pi: ExtensionAPI): void => {
       );
       if (!parsed.ok) {
         // Don't spawn a doomed build: bare words that aren't existing paths
-        // (e.g. "status") die upstream as [ROOT_NOT_FOUND] with exit 1.
+        // (e.g. "status") die upstream as
+        // `Error[ZG.ENGINE.NOT_FOUND]: resolve directory …` with exit 1.
         ui.notify(
           "Usage: /zg-index [--rebuild | --drop | <zg --index flags> | <workspace path>]. For index status use /zg-status (or run `zg --status` in bash).",
           "error"
@@ -1057,7 +1058,7 @@ export const registerZgIndexCommand = (pi: ExtensionAPI): void => {
         return;
       }
       ui.setStatus("pi-zg", "indexing…");
-      ui.notify("zg index started", "info");
+      ui.notify("zg --index started", "info");
       const extra = parsed.args;
 
       // ponytail: /zg-index builds are unabortable and unlocked (command
@@ -1089,13 +1090,13 @@ export const registerZgIndexCommand = (pi: ExtensionAPI): void => {
         );
         const duration = ((Date.now() - started) / 1000).toFixed(1);
         if (res.code === 0) {
-          ui.notify(`zg index finished in ${duration}s`, "info");
+          ui.notify(`zg --index finished in ${duration}s`, "info");
           return;
         }
         const tailText =
           tail.length > 0 ? `\nLast output:\n${tail.join("\n")}` : "";
         ui.notify(
-          `zg index failed (exit ${res.code}) in ${duration}s${tailText}`,
+          `zg --index failed (exit ${res.code}) in ${duration}s${tailText}`,
           "error"
         );
       } finally {
@@ -1116,7 +1117,7 @@ const registerZgStatusCommand = (pi: ExtensionAPI): void => {
       // because the probe spawns can outlive a short print-mode session.
       const ui = safeUi(ctx);
       ui.setStatus("pi-zg", "checking zg status…");
-      ui.notify("zg status started", "info");
+      ui.notify("zg --status started", "info");
       try {
         const runner = makeRunner({ cwd: ctx.cwd, env: process.env });
         // Probe first: it runs `zg --version`, gates on >= 0.3.0, and caches the
@@ -1226,14 +1227,14 @@ const registerZgServerCommand = (pi: ExtensionAPI): void => {
           return;
         }
         if (res.code === 0) {
-          ui.notify(`zg server ${verb}: done`, "info");
+          ui.notify(`zg --server ${verb}: done`, "info");
           return;
         }
         const detail = [res.stdout.trim(), res.stderr.trim()]
           .filter((s) => s.length > 0)
           .join("\n");
         ui.notify(
-          `zg server ${verb} failed (exit ${res.code})${detail ? `:\n${detail}` : ""}`,
+          `zg --server ${verb} failed (exit ${res.code})${detail ? `:\n${detail}` : ""}`,
           "error"
         );
       } catch {
@@ -1404,12 +1405,12 @@ export const registerZgTool = (pi: ExtensionAPI): void => {
 //     that stays on first tool use, exactly as before.
 //   - one build per process: the per-cwd chainCache shares buildP, so a
 //     warmup racing the first tool call joins the same build.
-//   - one daemon: every session attempts `zg server on` once (idempotent;
+//   - one daemon: every session attempts `zg --server on` once (idempotent;
 //     upstream enforces a single instance per home via the fixed port), so
 //     a daemon from a previous session is reused and a dead one revives at
 //     startup instead of staying down until the next build.
 // ponytail: locks are per-process — two pi windows on the same cold repo can
-// race two `zg index` runs; upstream tolerates concurrent builds. Split a
+// race two `zg --index` runs; upstream tolerates concurrent builds. Split a
 // cross-process lock only if that ever misbehaves.
 export const sessionWarmup = async (
   ctx: WarmupCtx,

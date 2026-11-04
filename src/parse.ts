@@ -47,9 +47,14 @@ const TRUNCATION_LINE = /^\s{2}(?:…|\.\.\.)$/u;
 // --preview none source line: line number, tab, text.
 const PLAIN_PREVIEW_LINE = /^(?<num>\d+)\t(?<text>.*)$/u;
 // Header-adjacent metadata: never source text, so it must not reach the
-// snippet. Covers code (`symbol:`), markdown (`heading:`), and diagnostics.
+// snippet. Covers code (`symbol:`), markdown (`heading:`), diagnostics, and
+// the 0.3.0 stale-index trailer — a stale index stamps each hit with
+// `status: possibly_stale` and closes the run with `results:
+// served_from_current_index` / `background_refresh: idle (n/m)`. Those are
+// run-level facts, not hits, so they end the listing instead of forcing the
+// whole query to {raw}.
 const METADATA_LINE =
-  /^(?:symbol|heading|heading_level|scope|status|matched|source|outline|score|trace):/u;
+  /^(?:symbol|heading|heading_level|scope|status|matched|source|outline|score|trace|results|background_refresh):/u;
 // `  Coverage    ████ 100%  1 / 1 files` or
 // `  Coverage    Unavailable (rebuild required)`.
 const STATUS_COVERAGE = /^\s*Coverage\s+(?<value>.+?)\s*$/u;

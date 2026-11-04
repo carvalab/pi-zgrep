@@ -28,6 +28,13 @@ src/zg.ts:19-63  o JS entry, so a plain global
 
 The top hit is the answer, and none of the question's words is an identifier in the code: ripgrep, handed that sentence, finds only this repo's benchmark question list, never `awaitChild`. Questions phrased in their own vocabulary are where the index pays for itself; see [Benchmarks](#benchmarks) for the measured numbers.
 
+## What's new in 0.7
+
+- This release needs zg 0.3.0, the native Rust engine with an rg-style command line. An older binary is refused by name, with its path and version, instead of being handed flags it would read as search text.
+- The engine is a normal npm dependency again. The per-platform package carries the binary and a checksum, so installs that block scripts keep working: npm 12's default and `npm install --ignore-scripts` both leave search working.
+- `PI_ZG_BIN` is exclusive. When you set it, it is the only candidate: a missing, non-executable, stub, or too-old file gets one error and no silent fallback.
+- The first index of a workspace names its embedding model, so a cold start no longer fails with `ZG.ENGINE.NOT_FOUND`.
+
 ## What's new in 0.6
 
 - Each repository searches its own index. zg looks for an index in the current folder and then in each parent folder, so an index left in a parent folder (say `~/Dev`) used to capture every repo below it: the status said ready and semantic queries returned the parent's files. Now a repo inside an indexed parent gets its own index on first use.

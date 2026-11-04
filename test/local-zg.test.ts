@@ -107,15 +107,14 @@ const installFakeEngine = (dir: string, version: string): string => {
   return cli;
 };
 
-test("resolveLocalEngine verifies and returns the platform payload", async () => {
-  await withTempDir((dir) => {
+test("resolveLocalEngine verifies and returns the platform payload", () =>
+  withTempDir((dir) => {
     const cli = installFakeEngine(dir, "0.3.0");
     assert.deepEqual(resolveLocalEngine(dir), { cli, problems: [] });
-  });
-});
+  }));
 
-test("resolveLocalEngine reports the stub and returns null without a platform package", async () => {
-  await withTempDir((dir) => {
+test("resolveLocalEngine reports the stub and returns null without a platform package", () =>
+  withTempDir((dir) => {
     const metaDir = path.join(dir, "node_modules", "@zvec", "zvec-grep");
     mkdirSync(path.join(metaDir, "bin"), { recursive: true });
     writeFileSync(
@@ -132,14 +131,46 @@ test("resolveLocalEngine reports the stub and returns null without a platform pa
       engine.problems.some((p) => p.includes("placeholder")),
       `expected a placeholder problem; got ${JSON.stringify(engine.problems)}`
     );
-  });
-});
+  }));
 
-test("resolveLocalEngine returns null when the dependency is absent", async () => {
-  await withTempDir((dir) => {
+test("resolveLocalEngine returns null when the dependency is absent", () =>
+  withTempDir((dir) => {
     assert.deepEqual(resolveLocalEngine(dir), { cli: null, problems: [] });
-  });
-});
+  }));
+
+// A payload is trusted only after checksums.json agrees on byte length and
+// sha256 (src/index.ts:217-222). The resolver repeats that check on every
+// resolve, so a tampered or half-written bin/<binary> is refused by name
+// instead of being spawned.
+test("resolveLocalEngine rejects a payload that fails checksum verification", () =>
+  withTempDir((dir) => {
+    const cli = installFakeEngine(dir, "0.3.0");
+    const checksums = path.join(
+      path.dirname(path.dirname(cli)),
+      "checksums.json"
+    );
+    writeFileSync(
+      checksums,
+      JSON.stringify({
+        files: {
+          [`bin/${PAYLOAD}`]: {
+            bytes: statSync(cli).size,
+            sha256: "0".repeat(64),
+          },
+        },
+      })
+    );
+    const engine = resolveLocalEngine(dir);
+    assert.equal(engine.cli, null);
+    assert.ok(
+      engine.problems.some(
+        (p) =>
+          p.includes("failed checksum verification") &&
+          p.includes(`bin/${PAYLOAD}`)
+      ),
+      `expected a checksum problem; got ${JSON.stringify(engine.problems)}`
+    );
+  }));
 
 // A runner env with a PATH that resolves nothing. "zg" is always probe()'s
 // last candidate, so an empty/absent PATH lets the spawn fall back to this

@@ -233,9 +233,9 @@ const splitCommandArgs = (raw: string): string[] | null => {
 // /zg-index argument guard. Flags pass through untouched (thin integrator —
 // upstream can add flags without changes here). A bare word is forwarded only
 // when it exists on disk (upstream's optional positional [root]); anything
-// else is a typo like "status" that upstream kills with [ROOT_NOT_FOUND] —
-// reject it with a usage hint instead of a doomed spawn. `exists` is
-// injectable for tests.
+// else is a typo like "status" that upstream kills with
+// `Error[ZG.ENGINE.NOT_FOUND]: resolve directory …`; reject it with a usage
+// hint instead of a doomed spawn. `exists` is injectable for tests.
 export const parseIndexCommandArgs = (
   raw?: string,
   exists: (p: string) => boolean = existsSync

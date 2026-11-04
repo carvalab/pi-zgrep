@@ -209,7 +209,7 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     if (res.code !== 0) {
       const tailText =
         tail.length > 0 ? `\nLast output:\n${tail.join("\n")}` : "";
-      throw new Error(`zg index failed (exit ${res.code}).${tailText}`);
+      throw new Error(`zg --index failed (exit ${res.code}).${tailText}`);
     }
   };
 
@@ -266,7 +266,7 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     // download failure, broken repo → indexer error, etc. — spec § L85, § L87).
     if (failedRoots.has(opts.root)) {
       return {
-        error: `zg index is not ready (previous build attempt failed). zg --status said: ${st.stdout || st.stderr}`,
+        error: `zg --index is not ready (previous build attempt failed). zg --status said: ${st.stdout || st.stderr}`,
       };
     }
     if (isUnsafeAutoIndexRoot(plan.buildRoot, opts.home)) {

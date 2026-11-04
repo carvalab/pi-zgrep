@@ -5,9 +5,10 @@
 // and taking the first `.zvec-grep/` it finds (engine/service/root.js,
 // findNearestWorkspaceLocation). It does not stop at a repository boundary,
 // and its builds skip nested git repositories. So one index left in a parent
-// folder (say ~/Dev) captures every repo below it: `zg status` reports ready,
-// and queries return the parent's files. A plain `zg index` from the child
-// refreshes the parent too. Captured against zg 0.2.2.
+// folder (say ~/Dev) captures every repo below it: `zg --status` reports
+// ready, and queries return the parent's files. A plain `zg --index` from
+// the child refreshes the parent too. Captured against zg 0.2.2, and still
+// true of the 0.3.0 engine (test/fixtures/NOTES.md).
 //
 // The plan treats a `.git` (directory, or file for worktrees/submodules)
 // between cwd and the ancestor index as a boundary: that repo needs its own
@@ -21,7 +22,7 @@ import path from "node:path";
 export const ZVEC_GREP_DIR = ".zvec-grep";
 
 export interface WorkspacePlan {
-  // Root a build should target, passed to `zg index <root>` explicitly so
+  // Root a build should target, passed to `zg --index <root>` explicitly so
   // upstream cannot redirect it to an ancestor.
   buildRoot: string;
   // Root of the nearest existing index, or null when none exists.

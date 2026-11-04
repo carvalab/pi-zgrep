@@ -68,7 +68,7 @@ Without `--session-dir`, pi writes session logs to `~/.pi/agent/sessions/<flatte
 
 Known failure mode (hit 2026-10-16): semantic results come from another project. A stray parent-folder index (it was `~/Dev/.zvec-grep`) answered for every repo below it. Fixed in 0.6.0 by the ancestor-index guard; confirm with `zg --status` (the second line is the resolved root) and delete the stray `.zvec-grep/` if it isn't wanted.
 
-Known failure mode (hit 2026-09-03): tool returns `zg index failed … zvec file metadata storage does not exist`. That is a stale/broken gitignored `.zvec-grep/` index in the workspace (interrupted build), not an extension bug — the e2e suite still passes. Fix: `rm -rf .zvec-grep && zg --index`, then re-run the smoke.
+Known failure mode (hit 2026-09-03): tool returns `zg --index failed … zvec file metadata storage does not exist`. That is a stale/broken gitignored `.zvec-grep/` index in the workspace (interrupted build), not an extension bug — the e2e suite still passes. Fix: `rm -rf .zvec-grep && zg --index`, then re-run the smoke.
 
 ### Clean-room test (latest pi, this extension only)
 

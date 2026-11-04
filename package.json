@@ -1,6 +1,6 @@
 {
   "name": "pi-zgrep",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Semantic, BM25, hybrid, and grep search for the pi coding agent, powered by the zg (zvec-grep) engine. One tool, auto-indexed, local-first. A semantic upgrade over ripgrep for code questions.",
   "keywords": [
     "ai-agent",

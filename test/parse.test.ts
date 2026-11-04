@@ -163,7 +163,7 @@ test("symbol hits with metadata lines parse instead of falling to raw", () => {
   assert.equal(second?.snippet?.split("\n")[0], "class AuthService {");
   assert.equal(
     third?.snippet?.split("\n")[0],
-    "validate(token: [redacted]): boolean {"
+    "validate(token: string): boolean {"
   );
   // `symbol:`/`scope:` frame the hit; they are not source text.
   assert.doesNotMatch(first?.snippet ?? "", /^symbol:/mu);

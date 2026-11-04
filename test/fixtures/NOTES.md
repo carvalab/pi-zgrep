@@ -210,3 +210,26 @@ worktree never gains `.zvec-grep/` state. A first non-interactive
 `--index` must name a model (`--embedding
 local/potion-code-16m-v2`), or the next query is refused with
 `[ZG.ENGINE.NOT_FOUND]` — see `test/ensure.test.ts`.
+
+## Findings against the real 0.3.0 binary (2026-11-03)
+
+- **A parent index still answers for a repo below it.** Index a folder, then
+  `git init` a child with one file and query from the child: `zg --status`
+  reports the parent's `Coverage` (`1 / 2 files (needs update)`) and a hybrid
+  query returns the parent's file — 0.3.0 still walks past the `.git` boundary,
+  so `src/workspace.ts` (a `.git` between cwd and the ancestor index means
+  "build our own") is the only thing keeping a repo's results its own. Such a
+  stale-index query also appends a trailer after the hits (`status:
+  possibly_stale`, `results: served_from_current_index`, `background_refresh:
+  idle (n/m)`), which a fresh index does not print.
+- **`query-output-outline.txt` is the real symbol-hit shape.** `zg --hybrid
+  "where is the theme returned" --color never --limit 3` against a scratch
+  `src/theme.ts` (function, class, method) reproduces the block grammar byte for
+  byte: `#<rank> <path>:<start>-<end>` at column 0, `symbol: [<kind>] <name>`, a
+  `scope: <Class>` token on method hits, and two-space-indented `<line>:
+  <text>` previews. No `outline:`/`calls:` block appears outside `--preview
+  detail`. The one drift was the method's type annotation, blanked to
+  `[redacted]` by hand in the committed capture while a real run prints the
+  source line verbatim (`validate(token: string): boolean {`); the fixture was
+  re-captured from that run and `test/parse.test.ts` now expects the real text.
+

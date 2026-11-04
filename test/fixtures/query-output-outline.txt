@@ -7,13 +7,13 @@ symbol: [function] loadTheme
 #2 src/theme.ts:5-9
 symbol: [class] AuthService
   5: class AuthService {
-  6:   validate(token: [redacted]): boolean {
+  6:   validate(token: string): boolean {
   7:     return token.length > 0;
   8:   }
   9: }
 
 #3 src/theme.ts:6-8
 symbol: [function] validate scope: AuthService
-  6: validate(token: [redacted]): boolean {
+  6: validate(token: string): boolean {
   7:     return token.length > 0;
   8:   }

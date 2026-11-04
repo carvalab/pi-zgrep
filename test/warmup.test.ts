@@ -58,7 +58,15 @@ const withTempDir = async (
   try {
     await fn(dir);
   } finally {
-    rmSync(dir, { force: true, recursive: true });
+    // Windows keeps a handle on the dir while the fake zg the test spawned is
+    // still exiting (EBUSY). The assertions already ran above, so retrying the
+    // cleanup for a moment is right; it must not turn into a red test.
+    rmSync(dir, {
+      force: true,
+      maxRetries: 20,
+      recursive: true,
+      retryDelay: 100,
+    });
   }
 };
 

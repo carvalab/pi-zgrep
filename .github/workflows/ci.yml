@@ -58,3 +58,22 @@ jobs:
       - run: npm run test:pi
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  # Which zg the extension actually runs, per user setup: the packed tarball
+  # installed with and without lifecycle scripts, an old global 0.2.2 on PATH,
+  # PI_ZG_BIN overrides (0.2.x, 0.3.x, missing), and the 0.6.0 -> 0.7.0 upgrade
+  # that has to rebuild a 0.2.x index. It installs real published versions, so
+  # it needs the npm registry, and S6 downloads a 32 MB embedding model.
+  upgrade:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run test:upgrade

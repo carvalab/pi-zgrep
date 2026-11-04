@@ -220,9 +220,10 @@ local/potion-code-16m-v2`), or the next query is refused with
   query returns the parent's file — 0.3.0 still walks past the `.git` boundary,
   so `src/workspace.ts` (a `.git` between cwd and the ancestor index means
   "build our own") is the only thing keeping a repo's results its own. Such a
-  stale-index query also appends a trailer after the hits (`status:
-  possibly_stale`, `results: served_from_current_index`, `background_refresh:
-  idle (n/m)`), which a fresh index does not print.
+  stale-index query also stamps each hit with `status: possibly_stale` on
+  stdout, before that hit's preview, while the index catches up; a run trailer
+  (`results: served_from_current_index`, `background_refresh: idle (n/m)`)
+  goes to stderr. A fresh index prints neither.
 - **`query-output-outline.txt` is the real symbol-hit shape.** `zg --hybrid
   "where is the theme returned" --color never --limit 3` against a scratch
   `src/theme.ts` (function, class, method) reproduces the block grammar byte for

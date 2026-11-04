@@ -20,7 +20,7 @@ All notable changes to pi-zgrep. Release sections are curated before tagging (us
 
 - Installs that block lifecycle scripts keep working (npm 12 / RFC 0054 defaults, `--ignore-scripts`) because the per-platform package already ships the binary; the sharp/node-gyp workaround and the retry dance are gone. Only `--omit=optional` breaks search, and the error now says to reinstall without it or set `PI_ZG_BIN`.
 - The runner spawns the native binary directly (never through `node`) and prefers the bundled engine over PATH; a PATH copy is used only when no platform package resolves.
-- The parser reads 0.3.0 output — `#1 <path>:<start>-<end>` result blocks, `No matches.` as an empty result set, and the Coverage note `Unavailable (rebuild required)` as freshness — and returns raw passthrough for any structural miss instead of fabricating fields. A stale index's trailer (`status: possibly_stale`, `results: served_from_current_index`, `background_refresh: idle (n/m)`) is read as metadata, so a stale query still parses into hits.
+- The parser reads 0.3.0 output — `#1 <path>:<start>-<end>` result blocks, `No matches.` as an empty result set, and the Coverage note `Unavailable (rebuild required)` as freshness — and returns raw passthrough for any structural miss instead of fabricating fields. On a stale index, each hit is stamped `status: possibly_stale` on stdout while the index catches up and still parses into a hit with `stale: true`; the run trailer (`results: …`, `background_refresh: …`) goes to stderr and is not parsed.
 - `/zg-index` forwards a bare word only when it exists on disk (upstream rejects an unknown root with `Error[ZG.ENGINE.NOT_FOUND]: resolve directory …`, exit 1); anything else gets a usage line instead of a doomed build.
 
 **Fixed**

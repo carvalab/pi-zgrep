@@ -149,7 +149,6 @@ export const formatQueryText = (
     parts.push(
       `[${parsed.results.length} results, limit ${o.limit} reached. ${how}]`
     );
-    return parts.join("\n\n");
   }
   return parts.join("\n\n");
 };

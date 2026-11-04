@@ -22,6 +22,7 @@ All notable changes to pi-zgrep. Release sections are curated before tagging (us
 - The runner spawns the native binary directly (never through `node`) and prefers the bundled engine over PATH; a PATH copy is used only when no platform package resolves.
 - The parser reads 0.3.0 output — `#1 <path>:<start>-<end>` result blocks, `No matches.` as an empty result set, and the Coverage note `Unavailable (rebuild required)` as freshness — and returns raw passthrough for any structural miss instead of fabricating fields. On a stale index, each hit is stamped `status: possibly_stale` on stdout while the index catches up and still parses into a hit with `stale: true`; the run trailer (`results: …`, `background_refresh: …`) goes to stderr and is not parsed.
 - `/zg-index` forwards a bare word only when it exists on disk (upstream rejects an unknown root with `Error[ZG.ENGINE.NOT_FOUND]: resolve directory …`, exit 1); anything else gets a usage line instead of a doomed build.
+- Tested against pi 1.5.0, now the dev dependency (`^1.5.0`; `peerDependencies` stays `*`). pi 1.5 validates tool arguments with `pi-schema` rather than TypeBox: the `zg` schema is plain JSON Schema, so it validates unchanged, and `prepareArguments` still runs before validation. The package also ships `CHANGELOG.pi.md` from `pi.changelogPath`, so pi 1.5's Extension Updates can show what changed after an update — pi's parser needs `## 0.7.0` headings, which the `v`-prefixed `CHANGELOG.md` that the release job matches cannot carry.
 
 **Fixed**
 

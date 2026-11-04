@@ -18,7 +18,7 @@ All four commands must pass before you open a PR:
 npm run lint && npm run format:check && npm run typecheck && npm run test
 ```
 
-CI runs the same set on Ubuntu and Windows, Node 22, 24, and 26, then the embedding-model load test (`test/model-load.test.ts`, gated on `ZG_TEST_MODEL=1`). A separate job runs `npm run test:pi`, a real pi session against a pinned cheap paid OpenRouter model (`PI_ZG_IT_MODEL` overrides it), and skips it when `OPENROUTER_API_KEY` is unset.
+CI runs the same set on Ubuntu, Windows and macOS, Node 22, 24, and 26, then the embedding-model load test (`test/model-load.test.ts`, gated on `ZG_TEST_MODEL=1`). Two more jobs run alongside them: `npm run test:upgrade` (the install-scenario matrix: packed tarball with and without lifecycle scripts, an old PATH `zg`, `PI_ZG_BIN` overrides, the 0.2.x → 0.7.0 index upgrade) on Ubuntu, Windows and macOS, and `npm run test:pi`, a real pi session against a pinned cheap paid OpenRouter model (`PI_ZG_IT_MODEL` overrides it), which skips when `OPENROUTER_API_KEY` is unset.
 
 A routing eval gate (`.github/workflows/routing.yml`) runs on pull requests that touch `src/index.ts`, `skills/**`, `tools/routing-eval.mjs` or `package.json`: it replays a small concept + holdout subset and fails when `zg`-first routing on `concept` drops below 80%. The full matrix runs weekly and keeps its JSON as an artifact. Both skip with a notice when `OPENROUTER_API_KEY` is absent, so forks still pass. If you edit guidance text or a skill, reproduce the gate locally first:
 

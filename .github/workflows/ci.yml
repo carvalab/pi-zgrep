@@ -43,9 +43,10 @@ jobs:
         env:
           ZG_TEST_MODEL: "1"
 
-  # Real pi session against a pinned free OpenRouter model. Skips itself when
-  # the secret is absent, so forks without it still pass. One OS is enough: the
-  # matrix above already covers Windows.
+  # Real pi session against a pinned paid OpenRouter model (a free `:free` pin
+  # answered 429 free-models-per-day instead of exercising the tool). Skips
+  # itself when the secret is absent, so forks without it still pass. One OS is
+  # enough: the matrix above already covers Windows and macOS.
   pi:
     runs-on: ubuntu-latest
     steps:
@@ -59,7 +60,8 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
-  # Which zg the extension actually runs, per user setup: the packed tarball
+  # Which zg the extension actually runs, per user setup (`npm run test:upgrade`):
+  # the packed tarball
   # installed with and without lifecycle scripts, an old global 0.2.2 on PATH,
   # PI_ZG_BIN overrides (0.2.x, 0.3.x, missing), and the 0.6.0 -> 0.7.0 upgrade
   # that has to rebuild a 0.2.x index. It installs real published versions, so

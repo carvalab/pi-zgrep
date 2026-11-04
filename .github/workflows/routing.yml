@@ -75,9 +75,20 @@ jobs:
         if: steps.key.outputs.present == 'true'
         run: npm ci
 
+      # Pinned to the version in package-lock.json, not `latest`: a global
+      # install resolves its own tree, so an unpinned run once died on
+      # `ETARGET` for a transitive @aws-sdk package while the registry caught
+      # up. Bump the dev dependency to move it.
+      - name: Read the pinned pi version
+        id: pi
+        if: steps.key.outputs.present == 'true'
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/@earendil-works/pi-coding-agent'].version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Install pi
         if: steps.key.outputs.present == 'true'
-        run: npm install -g @earendil-works/pi-coding-agent
+        run: npm install -g "@earendil-works/pi-coding-agent@${{ steps.pi.outputs.version }}"
 
       # The express clone is indexed once and reused; a cold index build inside
       # a session would bias the choice the eval measures.
@@ -145,9 +156,17 @@ jobs:
         if: steps.key.outputs.present == 'true'
         run: npm ci
 
+      # Same pin as the gate above; see the note there.
+      - name: Read the pinned pi version
+        id: pi
+        if: steps.key.outputs.present == 'true'
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/@earendil-works/pi-coding-agent'].version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Install pi
         if: steps.key.outputs.present == 'true'
-        run: npm install -g @earendil-works/pi-coding-agent
+        run: npm install -g "@earendil-works/pi-coding-agent@${{ steps.pi.outputs.version }}"
 
       - name: Cache the workspace and embedding model
         if: steps.key.outputs.present == 'true'

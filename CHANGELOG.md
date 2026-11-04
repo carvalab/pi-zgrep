@@ -28,6 +28,7 @@ All notable changes to pi-zgrep. Release sections are curated before tagging (us
 
 **Fixed**
 
+- A boolean `refresh` from a model is read as a flag instead of failing validation. gpt-oss-20b sent `{"refresh": true}` and pi answered `Validation failed for tool "zg": refresh: expected string, got boolean`, costing the call; `prepareZgArguments` now maps `true` — and `"true"`, in any casing — to `"wait"`, and drops `false` for the `auto` default.
 - The install-scenario matrix — bundled engine, rejected 0.2.1, omitted optional deps, `PI_ZG_BIN` overrides and the 0.2.x index upgrade — is pinned by a test suite (`npm run test:upgrade`, Ubuntu, Windows and macOS), so a resolution regression fails CI instead of shipping.
 - The guidance pi renders into the system prompt is pinned by a test, so a reword that drops the `zg`-first advice fails CI instead of quietly sending models back to grep.
 - The first index on a fresh repo no longer fails with `ZG.ENGINE.NOT_FOUND`: a build that starts from nothing passes `--embedding` explicitly, resolved from `ZVEC_GREP_EMBEDDING`, then `PI_ZG_EMBEDDING`, then the local default `local/potion-code-16m-v2`.

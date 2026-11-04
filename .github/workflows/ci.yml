@@ -53,9 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         model:
-          - google/gemma-4-31b-it:free
           - nvidia/nemotron-3-ultra-550b-a55b:free
-          - openai/gpt-oss-120b
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

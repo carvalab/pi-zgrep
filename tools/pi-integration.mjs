@@ -184,22 +184,27 @@ export const assertZgHit = (entries, context = "") => {
 // pins list tools, tool_choice and reasoning in OpenRouter's catalog
 // (https://openrouter.ai/api/v1/models), so a reasoning request is valid for
 // them and no endpoint can answer "Reasoning is mandatory".
+//
+// Evidence, one session per model against the installed package (2026-11-04):
+// nvidia/nemotron-3-ultra-550b-a55b:free called zg and hit hello.ts on the first
+// attempt; openai/gpt-oss-120b did the same; google/gemma-4-31b-it:free answered
+// 429 "temporarily rate-limited upstream" on its free endpoint (Google AI Studio)
+// and only got there through the fallback, so it is not the primary.
 export const MODELS = {
-  // Free, 262K context, offered with tools by 18 upstream providers — the widest
-  // pool among the :free tool-capable models, so the least likely to queue.
+  // Free, 1M context, tools + tool_choice + reasoning, five upstream providers.
+  primary:
+    process.env.PI_ZG_IT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free",
+  // Cheapest paid model with tools and reasoning ($0.022/M prompt tokens), with a
+  // wide provider pool, so a fallback run costs a fraction of a cent. It also runs
+  // the negative proof: a throttled free endpoint would mask the engine failure.
   backup: process.env.PI_ZG_IT_BACKUP_MODEL || "openai/gpt-oss-120b",
-  primary: process.env.PI_ZG_IT_MODEL || "google/gemma-4-31b-it:free",
 };
 
-// Cheapest paid model with tools and reasoning ($0.022/M prompt tokens), with a
-// wide provider pool, so a fallback run costs a fraction of a cent. It backs up
-// the free primary and only runs when that one fails provider-side.
-//
 // The reasoning level each model needs. Both reason by default on their
-// OpenRouter endpoints; asking for reasoning explicitly is what keeps the
-// request valid where an endpoint refuses a non-reasoning call.
+// OpenRouter endpoints; asking for reasoning explicitly is what keeps the request
+// valid where an endpoint refuses a non-reasoning call.
 export const THINKING = {
-  "google/gemma-4-31b-it:free": "high",
+  "nvidia/nemotron-3-ultra-550b-a55b:free": "high",
   "openai/gpt-oss-120b": "high",
 };
 
@@ -693,7 +698,12 @@ const main = () => {
         `pi integration: PI_ZG_IT_NEGATIVE=1, running with PI_ZG_BIN=${missing}; this run must fail and must not be retried`
       );
       // One attempt, no fallback: the proof is about the engine, not the model.
-      const run = attempt("negative", MODELS.primary);
+      // It runs on the backup model because a free endpoint that throttles would
+      // fail before zg is ever called, which masks the engine rather than
+      // proving it; the backup is the paid, reliable pin.
+      const negativeModel =
+        process.env.PI_ZG_IT_NEGATIVE_MODEL || MODELS.backup;
+      const run = attempt("negative", negativeModel);
       if (run.failure === null) {
         throw new Error(
           "PI_ZG_IT_NEGATIVE=1 passed every assertion: the negative proof is broken"

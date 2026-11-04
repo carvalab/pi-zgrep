@@ -117,7 +117,8 @@ const emptyHint = (mode: QueryMode): string =>
     : "Try mode=rg for exact text, a different mode, or a broader query.";
 
 // The text the model reads for a parsed query. Zero results say so instead
-// of returning an empty string; a full page says more may exist.
+// of returning an empty string; a full page says more may exist; hits the
+// engine marked `possibly_stale` get one note pointing at exact text.
 export const formatQueryText = (
   parsed: QueryParse,
   o: { limit: number; mode: QueryMode }
@@ -129,14 +130,28 @@ export const formatQueryText = (
     return `No matches (mode=${o.mode}). ${emptyHint(o.mode)}`;
   }
   const body = renderResults(parsed);
+  const parts = [body];
+  // The engine stamps `status: possibly_stale` on hits while its index catches
+  // up with an edit. Say it once, so the model can re-run or ask for exact
+  // text; the tool description and guidanceLines() both tell it to fall back
+  // when a result reports possibly_stale.
+  const stale = parsed.results.filter((r) => r.stale === true).length;
+  if (stale > 0) {
+    parts.push(
+      `Note: index is refreshing; ${stale} ${stale === 1 ? "result" : "results"} marked possibly_stale may be outdated. Re-run or use mode=rg for exact current text.`
+    );
+  }
   if (parsed.results.length >= o.limit) {
     const how =
       o.limit < MAX_LIMIT
         ? `Raise limit (max ${MAX_LIMIT}) or narrow glob/type for more.`
         : "Narrow the query or glob/type for more.";
-    return `${body}\n\n[${parsed.results.length} results, limit ${o.limit} reached. ${how}]`;
+    parts.push(
+      `[${parsed.results.length} results, limit ${o.limit} reached. ${how}]`
+    );
+    return parts.join("\n\n");
   }
-  return body;
+  return parts.join("\n\n");
 };
 
 export interface Truncated {
@@ -194,6 +209,7 @@ export const ZgOutputSchema = Type.Object({
       lineStart: Type.Number(),
       score: Type.Optional(Type.Number()),
       snippet: Type.Optional(Type.String()),
+      stale: Type.Optional(Type.Boolean()),
     })
   ),
   truncated: Type.Boolean(),
@@ -201,7 +217,7 @@ export const ZgOutputSchema = Type.Object({
 
 // JSON-shaped copy for pi's structuredContent (JsonValue needs index
 // signatures, which the ZgResult interface does not declare).
-type JsonResult = Record<string, string | number>;
+type JsonResult = Record<string, string | number | boolean>;
 export const toStructured = (
   parsed: QueryParse,
   truncated: boolean

@@ -147,6 +147,33 @@ test("unparsed output keeps the raw passthrough with the issue hint", () => {
   );
 });
 
+// The stale signal is a per-hit line on stdout that the parser now keeps as
+// `stale: true`. Without this note the model reads a stale snippet as current
+// text and never applies the "fall back when a result says possibly_stale"
+// guidance in the tool description.
+test("stale hits add one note to the text and to structuredContent", () => {
+  const parsed = parseQueryOutput(fixture("query-output-stale.txt"));
+  const text = formatQueryText(parsed, { limit: 10, mode: "hybrid" });
+  assert.match(text, /^hello\.ts:2-4/u);
+  assert.match(
+    text,
+    /^Note: index is refreshing; 1 result marked possibly_stale may be outdated\. Re-run or use mode=rg for exact current text\.$/mu
+  );
+  // Exactly one line of note, not one per hit.
+  assert.equal(text.split("\n").filter((l) => l.startsWith("Note:")).length, 1);
+  // The flag rides along for programmatic callers and validates against the
+  // declared outputSchema.
+  const detail = toStructured(parsed, false);
+  assert.equal(detail.results[0]?.stale, true);
+  assert.ok(Value.Check(ZgOutputSchema, detail), "stale result shape");
+  // A fresh hit gets no note.
+  const fresh = formatQueryText(parseQueryOutput(fixture("query-output.txt")), {
+    limit: 10,
+    mode: "hybrid",
+  });
+  assert.doesNotMatch(fresh, /possibly_stale/u);
+});
+
 // --- Truncation --------------------------------------------------------------------
 
 test("small output passes through without a temp file", async (t) => {

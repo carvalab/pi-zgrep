@@ -4,6 +4,3 @@ symbol: [function] loadTheme
   2: function loadTheme(): string {
   3:   return "dark";
   4: }
-status: possibly_stale
-results: served_from_current_index
-background_refresh: idle (0/1)

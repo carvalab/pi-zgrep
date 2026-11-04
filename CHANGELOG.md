@@ -14,6 +14,7 @@ All notable changes to pi-zgrep. Release sections are curated before tagging (us
 - Bundled-engine resolution for the native package: read `platforms.json`, locate `@zvec/zvec-grep-<os>-<arch>[-<libc>]`, verify `bin/<binary>` against the shipped `checksums.json` (byte length plus sha256), then fall back to a materialized `bin/zg.exe` that passes an ELF/PE/Mach-O magic check. The resolver is injectable, so unit tests never reach a real `node_modules`.
 - `/zg-status` now reports every rejected candidate with its path, version and reason; `/zg-server on` replaces a leftover 0.2.x daemon in place instead of failing on the protocol mismatch.
 - Upgrade path from 0.2.x needs no user action: an unreadable legacy index shows up as `rebuild required` and is rebuilt exactly once with `--index --rebuild`, and the first session's `--server on` performs the daemon migration.
+- Hits the engine marks `status: possibly_stale` are flagged to the model. zg writes that line on each hit while its index catches up with an edit, and it is the only stale signal on stdout (the `results:`/`background_refresh:` run trailer goes to stderr, which the tool does not read). The result text now carries one `Note: index is refreshing; N result(s) marked possibly_stale may be outdated. Re-run or use mode=rg for exact current text.` line, and `results[]` in `structuredContent` gains `stale: true`, so the `possibly_stale` fallback the tool description asks for is finally actionable.
 
 **Changed**
 

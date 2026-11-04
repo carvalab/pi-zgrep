@@ -127,12 +127,13 @@ test("status parser returns raw for input it cannot recognize", () => {
   }
 });
 
-// 0.3.0 appends a stale-index trailer when the index is behind the worktree:
-// `status: possibly_stale` on each hit, then a run-level block
-// (`results: served_from_current_index`, `background_refresh: idle (n/m)`).
-// Those keys are trailer metadata, not hits, so the parser must consume them
-// instead of bailing the whole listing to {raw}.
-test("stale-index trailer lines parse instead of falling back to raw", () => {
+// 0.3.0 marks each hit `status: possibly_stale` while its index is behind the
+// worktree. That per-hit line is the only stale signal on STDOUT: the run
+// trailer (`results: served_from_current_index`, `background_refresh: idle
+// (n/m)`) is written to stderr and never reaches the parser (see
+// fixtures/NOTES.md). The flag has to ride on the hit, or the model never
+// learns the snippet may be outdated.
+test("a stale hit parses with stale: true on the hit", () => {
   const parsed = parseQueryOutput(fixture("query-output-stale.txt"));
   assert.equal(
     "results" in parsed,
@@ -146,8 +147,13 @@ test("stale-index trailer lines parse instead of falling back to raw", () => {
       lineEnd: 4,
       lineStart: 2,
       snippet: 'function loadTheme(): string {\n  return "dark";\n}',
+      stale: true,
     });
   }
+  // A fresh index prints no status line, so the flag stays absent.
+  const fresh = parseQueryOutput(fixture("query-output.txt"));
+  assert.ok("results" in fresh);
+  assert.equal(fresh.results[0]?.stale, undefined);
 });
 
 test("rendering is one ripgrep-style line per result", () => {

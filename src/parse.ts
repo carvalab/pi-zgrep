@@ -24,6 +24,11 @@ export interface ZgResult {
   // optional; renderResults keeps a column for it when one is present.
   score?: number;
   snippet?: string;
+  // True when the engine stamped this hit `status: possibly_stale`: the index
+  // is behind the worktree, so the snippet may be outdated. That per-hit line
+  // is the only stale signal on stdout — the run trailer is stderr — so the
+  // flag has to ride on the hit itself.
+  stale?: boolean;
 }
 
 export type QueryParse = { results: ZgResult[] } | { raw: string };
@@ -47,14 +52,13 @@ const TRUNCATION_LINE = /^\s{2}(?:…|\.\.\.)$/u;
 // --preview none source line: line number, tab, text.
 const PLAIN_PREVIEW_LINE = /^(?<num>\d+)\t(?<text>.*)$/u;
 // Header-adjacent metadata: never source text, so it must not reach the
-// snippet. Covers code (`symbol:`), markdown (`heading:`), diagnostics, and
-// the 0.3.0 stale-index trailer — a stale index stamps each hit with
-// `status: possibly_stale` and closes the run with `results:
-// served_from_current_index` / `background_refresh: idle (n/m)`. Those are
-// run-level facts, not hits, so they end the listing instead of forcing the
-// whole query to {raw}.
+// snippet. Covers code (`symbol:`), markdown (`heading:`) and diagnostics.
+// `status:` lands here too: readHitBody reads `status: possibly_stale` as the
+// per-hit stale flag before this consumes it. The 0.3.0 run trailer (`results:
+// served_from_current_index`, `background_refresh: idle (n/m)`) is written to
+// stderr and never reaches the parser, so it needs no line shape here.
 const METADATA_LINE =
-  /^(?:symbol|heading|heading_level|scope|status|matched|source|outline|score|trace|results|background_refresh):/u;
+  /^(?:symbol|heading|heading_level|scope|status|matched|source|outline|score|trace):/u;
 // `  Coverage    ████ 100%  1 / 1 files` or
 // `  Coverage    Unavailable (rebuild required)`.
 const STATUS_COVERAGE = /^\s*Coverage\s+(?<value>.+?)\s*$/u;
@@ -126,12 +130,14 @@ const parseRgOutput = (text: string): QueryParse | null => {
 interface HitBody {
   next: number;
   snippet: string | undefined;
+  stale: boolean;
 }
 
 // Consume everything between a `#<rank> <path>:<range>` header and the next
 // header/divider/blank line: optional metadata lines plus the source preview.
 // Returns null when a line is neither, so the caller can bail to {raw}.
 const readHitBody = (lines: string[], start: number): HitBody | null => {
+  let stale = false;
   const previewLines: string[] = [];
   let next = start;
   while (next < lines.length) {
@@ -143,6 +149,13 @@ const readHitBody = (lines: string[], start: number): HitBody | null => {
       NO_HITS_LINE.test(line)
     ) {
       break;
+    }
+    if (line.startsWith("status: possibly_stale")) {
+      // This hit's snippet may be out of date: the index is behind the
+      // worktree. Flag it so the model can re-run or switch to mode=rg.
+      stale = true;
+      next += 1;
+      continue;
     }
     if (METADATA_LINE.test(line) || TRUNCATION_LINE.test(line)) {
       next += 1;
@@ -165,6 +178,7 @@ const readHitBody = (lines: string[], start: number): HitBody | null => {
   return {
     next,
     snippet: previewLines.length > 0 ? previewLines.join("\n") : undefined,
+    stale,
   };
 };
 
@@ -218,6 +232,9 @@ export const parseQueryOutput = (text: string): QueryParse => {
     }
     if (body.snippet !== undefined) {
       result.snippet = body.snippet;
+    }
+    if (body.stale) {
+      result.stale = true;
     }
     results.push(result);
     i = body.next;

@@ -80,39 +80,71 @@ const textOf = (message) =>
     .map((block) => block.text)
     .join("\n");
 
-// Whether the session's prompt declared the zg tool. The session runs without
-// `-e`, so the only extension that can register zg is the one inside the
-// package pi installed — this is what makes the run an installed-package run.
-export const zgToolDeclared = (entries) =>
-  entries.some((entry) => {
+// Tool names the session declared to the model, read from the persisted prompt
+// sections (plus the per-request tool diffs some sessions record). The session
+// runs without `-e`, so `zg` appearing here means the installed package's
+// extension registered it — that is what makes this an installed-package run.
+export const declaredToolNames = (entries) => {
+  const names = new Set();
+  for (const entry of entries) {
     const message = entry?.message;
     if (entry?.type !== "message" || message?.role !== "system") {
-      return false;
+      continue;
     }
-    const declared = (message.toolsAdded ?? []).some(
-      (tool) => tool?.name === "zg"
-    );
-    // Some sessions persist the tool loadout as prompt text instead.
-    const sectioned = Object.values(message.sections ?? {}).some(
-      (section) => typeof section === "string" && /^- zg\b/mu.test(section)
-    );
-    return declared || sectioned;
-  });
+    for (const tool of message.toolsAdded ?? []) {
+      if (typeof tool?.name === "string") {
+        names.add(tool.name);
+      }
+    }
+    for (const section of Object.values(message.sections ?? {})) {
+      // Only the tool list block counts: other sections also use "- name: text".
+      const tools = /<tools>([\s\S]*?)<\/tools>/u.exec(
+        typeof section === "string" ? section : ""
+      );
+      if (tools === null) {
+        continue;
+      }
+      for (const match of tools[1].matchAll(/^- ([\w-]+): /gmu)) {
+        names.add(match[1]);
+      }
+    }
+  }
+  return [...names];
+};
+
+export const zgToolDeclared = (entries) =>
+  declaredToolNames(entries).includes("zg");
+
+// What the session actually did, for the failure messages: which tools the
+// model was offered and what it said instead of calling zg.
+export const describeSession = (entries) => {
+  const tools = declaredToolNames(entries);
+  const said = entries
+    .filter((entry) => entry.message?.role === "assistant")
+    .map((entry) => textOf(entry.message))
+    .join("\n")
+    .trim();
+  return `declared tools: ${tools.length > 0 ? tools.join(", ") : "(none)"}\nassistant said: ${said.slice(0, 600) || "(nothing)"}`;
+};
 
 // Throws unless the session made a successful zg call whose structured results
-// include a hit on hello.ts. Returns that hit for the log line.
-export const assertZgHit = (entries) => {
+// include a hit on hello.ts. Returns that hit for the log line. `context` is
+// appended to every message so a CI failure explains itself.
+export const assertZgHit = (entries, context = "") => {
+  const fail = (message) => (context ? `${message}\n${context}` : message);
   const results = zgToolResults(entries);
   assert.ok(
     results.length > 0,
-    "session has no zg tool result (the installed package's tool never ran)"
+    fail(
+      "session has no zg tool result (the installed package's tool never ran)"
+    )
   );
   const failed = results.find(
     (message) => message.isError === true || message.details?.isError === true
   );
   assert.ok(
     failed === undefined,
-    `zg tool result is an error: ${textOf(failed)}`
+    fail(`zg tool result is an error: ${textOf(failed)}`)
   );
   const ok = results.find((message) => message.isError !== true);
   const hits = ok?.details?.results ?? ok?.structuredContent?.results ?? [];
@@ -122,7 +154,9 @@ export const assertZgHit = (entries) => {
   );
   assert.ok(
     hit !== undefined,
-    `zg tool result has no hello.ts hit: ${JSON.stringify(hits).slice(0, 600)}`
+    fail(
+      `zg tool result has no hello.ts hit: ${JSON.stringify(hits).slice(0, 600)}`
+    )
   );
   return hit;
 };
@@ -228,8 +262,14 @@ const main = () => {
 
     // 1. Pack the repo and install that tarball through pi's own installer, so
     //    the session below loads exactly what `npm publish` would ship. The
-    //    npm: prefix routes it through `npm install` into <agent dir>/npm
-    //    (a bare path would be loaded in place, with no tree to inspect).
+    //    npm: prefix routes it through `npm install` into <agent dir>/npm (a
+    //    bare path would be loaded in place, with no tree to inspect), and the
+    //    spec keeps the package name (`npm:<name>@file:<tgz>`): pi resolves an
+    //    npm source's install path from the name in the spec, so a nameless
+    //    `npm:<tgz>` installs the tree and then never loads a resource from it.
+    const pkgName = JSON.parse(
+      readFileSync(path.join(root, "package.json"), "utf-8")
+    ).name;
     const pack = spawnSync(
       "npm",
       ["pack", "--pack-destination", packDir, "--loglevel", "error"],
@@ -252,7 +292,7 @@ const main = () => {
       npm_config_ignore_scripts: "true",
       PI_CODING_AGENT_DIR: agentDir,
     };
-    const install = spawnSync("pi", ["install", `npm:${tgz}`], {
+    const install = spawnSync("pi", ["install", `npm:${pkgName}@file:${tgz}`], {
       cwd: scratch,
       encoding: "utf-8",
       env: piEnv,
@@ -267,7 +307,7 @@ const main = () => {
     // The installed package is the one pi will load; the engine must be in the
     // tree next to it, exactly where the extension looks for it.
     const modules = path.join(agentDir, "npm", "node_modules");
-    const pkgDir = path.join(modules, "pi-zgrep");
+    const pkgDir = path.join(modules, pkgName);
     assert.ok(
       existsSync(path.join(pkgDir, "src", "index.ts")),
       `installed package missing at ${pkgDir}: ${readdirSync(modules).join(", ")}`
@@ -335,21 +375,25 @@ const main = () => {
     );
 
     const entries = readSessionEntries(sessionDir);
+    const context = `${describeSession(entries)}\npi stdout: ${(run.stdout ?? "").slice(-800)}\npi stderr: ${(run.stderr ?? "").slice(-800)}`;
     // In the negative run the tool result is the whole point, so it is asserted
     // before the exit status: the failure has to name the zg error result.
     if (negative) {
-      assertZgHit(entries);
+      assertZgHit(entries, context);
     }
     assert.equal(
       run.status,
       0,
-      `pi exited ${run.status} (${run.error?.message ?? "no spawn error"}):\n${run.stdout ?? ""}\n${run.stderr ?? ""}`
+      `pi exited ${run.status} (${run.error?.message ?? "no spawn error"}):\n${context}`
     );
-    // 3. The structured result, not a substring of the log.
-    const hit = assertZgHit(entries);
     assert.ok(
       zgToolDeclared(entries),
-      "the installed package registered no zg tool in the session prompt"
+      `the installed package registered no zg tool in the session prompt\n${context}`
+    );
+    // 3. The structured result, not a substring of the log.
+    const hit = assertZgHit(entries, context);
+    console.log(
+      `pi integration: session declared tools: ${declaredToolNames(entries).join(", ")}`
     );
     console.log(
       `pi integration: zg hit ${hit.file}:${hit.lineStart}${hit.lineEnd === undefined ? "" : `-${hit.lineEnd}`}`

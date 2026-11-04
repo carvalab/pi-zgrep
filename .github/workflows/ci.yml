@@ -11,8 +11,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macOS is here because @zvec/zvec-grep ships per-platform native
+        # payloads: darwin-arm64 and darwin-x64 are two of them, and their
+        # checksum / exec-bit / spawn path is macOS-only. macos-latest is Apple
+        # Silicon; macos-15-intel is the x64 image (macos-13 is retired).
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node-version: ["22", "24", "26"]
+        # Intel macOS is the slowest runner, so it covers only one node version;
+        # that is enough to prove the darwin-x64 payload resolves and runs.
+        include:
+          - os: macos-15-intel
+            node-version: "24"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

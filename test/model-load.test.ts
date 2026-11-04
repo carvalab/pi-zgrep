@@ -34,6 +34,10 @@ const ok = process.env.ZG_TEST_MODEL === "1";
       cli,
       "packaged @zvec/zvec-grep native engine not found — run npm ci"
     );
+    // Name the payload in the CI log. This is the one line that shows *which*
+    // per-platform package resolved (darwin-arm64, darwin-x64, linux-x64-gnu,
+    // win32-x64), so a macOS job passing on a Linux payload cannot hide.
+    t.diagnostic(`engine: ${cli}`);
     const [cmd, prefix] = cli.endsWith(".js")
       ? [process.execPath, [cli]]
       : [cli, []];

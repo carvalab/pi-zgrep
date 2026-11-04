@@ -1419,11 +1419,21 @@ export const sessionWarmup = async (
   // Injectable bundled-engine resolver, same contract as makeRunner's. Tests
   // pass `() => null` so warmup never probes this repo's node_modules and never
   // runs a real `zg --index` against a scratch directory.
-  resolveEngine?: () => LocalEngine | null
+  resolveEngine?: () => LocalEngine | null,
+  // Aborted by the next session_start or by session_shutdown (see
+  // registerSessionWarmup). The warmup outlives the ctx that started it, so a
+  // reload must be able to stop the build instead of leaving it running.
+  signal?: AbortSignal
 ): Promise<void> => {
+  // A session that is already gone wants no spawn and no status line.
+  if (signal?.aborted) {
+    return;
+  }
   const ui = safeUi(ctx);
   const onProgress = (s: string): void => {
-    ui.setStatus("pi-zg", s.slice(0, 80));
+    if (!signal?.aborted) {
+      ui.setStatus("pi-zg", s.slice(0, 80));
+    }
   };
   const chain = getOrCreateZg({
     cwd: ctx.cwd,
@@ -1452,24 +1462,68 @@ export const sessionWarmup = async (
       return;
     }
     ui.setStatus("pi-zg", "checking index…");
-    const idx = await chain.zg.ensureIndex();
-    if (idx.error) {
+    const idx = await chain.zg.ensureIndex({ signal });
+    // Nothing to report to a session that ended mid-warmup: the build was
+    // cancelled on purpose and its exit code is only that cancellation's corpse.
+    if (idx.error && !signal?.aborted) {
       ui.notify(`zg warmup: ${idx.error}`, "error");
     }
   } catch {
     // Warmup must never break session start; the tool path surfaces real
     // errors (install failures, PI_ZG_BIN misconfig) to the agent.
   } finally {
-    ui.setStatus("pi-zg", undefined);
+    if (!signal?.aborted) {
+      ui.setStatus("pi-zg", undefined);
+    }
   }
 };
 
-const registerSessionWarmup = (pi: ExtensionAPI): void => {
+export const registerSessionWarmup = (
+  pi: ExtensionAPI
+): { whenIdle: () => Promise<void> } => {
+  // One live warmup per extension instance. A reload (`/new`, resume) and a
+  // shutdown both replace the ctx while the previous build may still be
+  // running, so it is cancelled instead of streaming into a dead session.
+  let activeWarmup: AbortController | undefined;
+  // Abort only *signals* the build: `runner.stream` kills the child and waits
+  // for it, but the warmup is fire-and-forget from the event handler, so that
+  // wait lands in a promise nobody holds. The killed `zg --index` child keeps
+  // the session's workspace as its cwd for a moment after the abort returns —
+  // harmless on POSIX, where a directory can be removed under a live process,
+  // EPERM on Windows until the process is really gone. Keep every started
+  // warmup here so a caller about to delete that workspace (teardown, tests)
+  // can wait for the killed child instead of racing it.
+  const running = new Set<Promise<void>>();
+  const track = (warm: Promise<void>): void => {
+    running.add(warm);
+    // Forget it on settle. Both handlers are attached, so a rejection can never
+    // surface as an unhandledRejection before whenIdle gets to observe it.
+    const forget = (): boolean => running.delete(warm);
+    void warm.then(forget, forget);
+  };
+  // Resolves once no warmup this instance started is still running, aborts
+  // included: the child an abort killed has exited and released the workspace.
+  // Recursive instead of a loop because a new session_start may track another
+  // warmup while this waits.
+  const whenIdle = async (): Promise<void> => {
+    if (running.size > 0) {
+      await Promise.allSettled(running);
+      await whenIdle();
+    }
+  };
   pi.on("session_start", (_event, ctx) => {
+    activeWarmup?.abort();
+    const ctrl = new AbortController();
+    activeWarmup = ctrl;
     // Fire-and-forget: never block startup on an index build. Reload/resume
     // re-runs it — two cheap spawns on a warm repo.
-    void sessionWarmup(ctx);
+    track(sessionWarmup(ctx, process.env, homedir(), undefined, ctrl.signal));
   });
+  pi.on("session_shutdown", () => {
+    activeWarmup?.abort();
+    activeWarmup = undefined;
+  });
+  return { whenIdle };
 };
 
 // --- Factory ----------------------------------------------------------------

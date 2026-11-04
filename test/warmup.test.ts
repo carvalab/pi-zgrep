@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -16,7 +18,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { safeUi, sessionWarmup } from "../src/index.ts";
+import { registerSessionWarmup, safeUi, sessionWarmup } from "../src/index.ts";
 
 const makeFakeZg = (dir: string, log: string): string => {
   const p = path.join(dir, "zg");
@@ -56,7 +58,15 @@ const withTempDir = async (
   try {
     await fn(dir);
   } finally {
-    rmSync(dir, { force: true, recursive: true });
+    // A warmup child killed by an abort releases this directory as its cwd a
+    // moment later. POSIX tolerates deleting it underneath the dying child;
+    // Windows answers EPERM, so retry instead of failing the test in teardown.
+    rmSync(dir, {
+      force: true,
+      maxRetries: 5,
+      recursive: true,
+      retryDelay: 100,
+    });
   }
 };
 
@@ -194,5 +204,207 @@ test("warmup in the home directory skips quietly: no index check, no error", asy
     const argv0 = readFileSync(log, "utf-8").trim().split("\n");
     assert.deepEqual(argv0, ["--version"], "probe only");
     assert.ok(!calls.some((c) => c.startsWith("notify:")), calls.join("|"));
+  });
+});
+
+// --- Warmup lifecycle (abort) ----------------------------------------------
+//
+// The warmup is fire-and-forget from session_start, so it outlives the session
+// that started it: a reload or /new aborts the old ctx while the build is still
+// streaming. Without an AbortSignal threaded through sessionWarmup →
+// ensureIndex → runner.stream, the killed session keeps an index build alive
+// (up to minutes on a cold repo) and keeps writing progress into a ctx it no
+// longer owns. `safeUi` hides the throw, not the work.
+
+// Build that streams progress for ~4 s, so an abort lands mid-build instead of
+// after it. Same probe/status shape as makeFakeZg: cold root, exit 1.
+const makeSlowFakeZg = (dir: string, log: string): string => {
+  const p = path.join(dir, "zg");
+  writeFileSync(
+    p,
+    [
+      "#!/bin/sh",
+      `echo "$1" >> ${JSON.stringify(log)}`,
+      'case "$1" in',
+      '  --version) echo "0.3.0" ;;',
+      "  --status)",
+      '    echo "  Coverage    Unavailable (index not configured)"',
+      "    exit 1 ;;",
+      "  --index)",
+      "    i=0",
+      '    while [ $i -lt 40 ]; do echo "Indexing: $i/40 files"; i=$((i+1)); sleep 0.1; done ;;',
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n")
+  );
+  chmodSync(p, 0o755);
+  return p;
+};
+
+const callsLog = (log: string): string =>
+  existsSync(log) ? readFileSync(log, "utf-8").trim() : "";
+
+// A ctx that records every ui *attempt* and throws once the session is gone.
+// The record comes first, so an attempt made after the session died stays
+// visible: safeUi swallows the throw, but the call still happened.
+const recordingUi = (): {
+  calls: string[];
+  expire: () => void;
+  ui: {
+    notify: (m: string) => void;
+    setStatus: (k: string, t?: string) => void;
+  };
+} => {
+  const calls: string[] = [];
+  let live = true;
+  return {
+    calls,
+    expire: (): void => {
+      live = false;
+    },
+    ui: {
+      notify: (message: string): void => {
+        calls.push(`notify:${message}`);
+        if (!live) {
+          throw staleError();
+        }
+      },
+      setStatus: (_key: string, text?: string): void => {
+        calls.push(`status:${text ?? "cleared"}`);
+        if (!live) {
+          throw staleError();
+        }
+      },
+    },
+  };
+};
+
+test("an already-aborted signal: no spawn, no ui touch", async () => {
+  await withTempDir(async (dir) => {
+    const log = path.join(dir, "calls.log");
+    const { calls, ui } = makeUi();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await sessionWarmup(
+      { cwd: dir, ui },
+      { PI_ZG_BIN: makeSlowFakeZg(dir, log) },
+      path.join(dir, "home"),
+      () => null,
+      ctrl.signal
+    );
+    await delay(250);
+    assert.equal(callsLog(log), "", "a dead session must not spawn zg");
+    assert.deepEqual(calls, []);
+  });
+});
+
+test("abort mid-build kills the build and stops every later ui call", async () => {
+  await withTempDir(async (dir) => {
+    const log = path.join(dir, "calls.log");
+    const ctx = recordingUi();
+    const ctrl = new AbortController();
+    const warm = sessionWarmup(
+      { cwd: dir, ui: ctx.ui },
+      { PI_ZG_BIN: makeSlowFakeZg(dir, log) },
+      path.join(dir, "home"),
+      () => null,
+      ctrl.signal
+    );
+    // Let the build start streaming, then reload the session.
+    await delay(400);
+    assert.ok(
+      ctx.calls.some((c) => c.startsWith("status:Indexing")),
+      `build progress must reach the ui first; got ${ctx.calls.join("|")}`
+    );
+    ctrl.abort();
+    // The session is gone from here on: no status line, no error notify.
+    ctx.expire();
+    await delay(700);
+    const settled = ctx.calls.length;
+    await delay(500);
+    assert.equal(
+      ctx.calls.length,
+      settled,
+      "nothing may touch the ui after the abort"
+    );
+    await warm;
+    assert.equal(
+      ctx.calls.filter((c) => c.startsWith("notify:")).length,
+      0,
+      "a cancelled build is not an error"
+    );
+  });
+});
+
+const captureSessionHandlers = (): {
+  handlers: Map<string, ((e: unknown, c: unknown) => void)[]>;
+  whenIdle: () => Promise<void>;
+} => {
+  const handlers = new Map<string, ((e: unknown, c: unknown) => void)[]>();
+  const { whenIdle } = registerSessionWarmup({
+    on: (event: string, handler: (e: unknown, c: unknown) => void): void => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+  } as unknown as Parameters<typeof registerSessionWarmup>[0]);
+  return { handlers, whenIdle };
+};
+
+test("session_start aborts the previous warmup, session_shutdown the next", async () => {
+  await withTempDir(async (dir) => {
+    const { handlers, whenIdle } = captureSessionHandlers();
+    const start = handlers.get("session_start")?.[0];
+    const shutdown = handlers.get("session_shutdown")?.[0];
+    assert.ok(start, "registerSessionWarmup must handle session_start");
+    assert.ok(shutdown, "registerSessionWarmup must handle session_shutdown");
+    // The registered handler reads process.env, so the fake binary has to live
+    // there for the duration (same contract as the tool/command tests).
+    const previousBin = process.env.PI_ZG_BIN;
+    process.env.PI_ZG_BIN = makeSlowFakeZg(dir, path.join(dir, "calls.log"));
+    try {
+      const previous = recordingUi();
+      start({}, { cwd: dir, ui: previous.ui });
+      await delay(400);
+      assert.ok(previous.calls.length > 0, "the first warmup runs");
+      // Reload: the previous session is replaced mid-build.
+      previous.expire();
+      start({}, { cwd: dir, ui: recordingUi().ui });
+      await delay(700);
+      const settled = previous.calls.length;
+      await delay(500);
+      assert.equal(
+        previous.calls.length,
+        settled,
+        "a new session_start must abort the warmup it replaced"
+      );
+      // Shutdown stops the live session's warmup the same way. A second, real
+      // directory keeps its own ensure-chain out of the first one.
+      const second = path.join(dir, "second");
+      mkdirSync(second);
+      const live = recordingUi();
+      start({}, { cwd: second, ui: live.ui });
+      await delay(400);
+      assert.ok(live.calls.length > 0, "the second warmup runs");
+      live.expire();
+      shutdown({}, {});
+      await delay(700);
+      const liveSettled = live.calls.length;
+      await delay(500);
+      assert.equal(
+        live.calls.length,
+        liveSettled,
+        "session_shutdown must abort the running warmup"
+      );
+      // Aborting only signals the kills: wait for the children the aborted
+      // warmups left behind before the teardown deletes their cwd. On
+      // Windows a live child holding the workspace turns that rm into EPERM.
+      await whenIdle();
+    } finally {
+      if (previousBin === undefined) {
+        delete process.env.PI_ZG_BIN;
+      } else {
+        process.env.PI_ZG_BIN = previousBin;
+      }
+    }
   });
 });

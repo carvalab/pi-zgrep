@@ -38,6 +38,7 @@
   "files": [
     "src",
     "skills",
+    "CHANGELOG.pi.md",
     "README.md",
     "LICENSE"
   ],
@@ -53,15 +54,16 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/*.test.ts\"",
     "test:e2e": "ZG_TEST_E2E=1 node --test \"test/*.test.ts\"",
-    "test:pi": "node tools/pi-integration.mjs"
+    "test:pi": "node tools/pi-integration.mjs",
+    "test:upgrade": "node tools/upgrade-matrix.mjs"
   },
   "dependencies": {
     "@zvec/zvec-grep": "^0.3.0",
     "cross-spawn": "^7.0.6"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^1.3.0",
-    "@earendil-works/pi-tui": "^1.3.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^24.19.2",
     "oxfmt": "^0.73.0",
@@ -78,6 +80,7 @@
     "node": ">=22.18"
   },
   "pi": {
+    "changelogPath": "./CHANGELOG.pi.md",
     "extensions": [
       "./src/index.ts"
     ],

@@ -35,7 +35,7 @@ const fakeRunner = (
     },
     stream: (
       args: string[],
-      _o?: { onUpdate?: (s: string) => void }
+      _o?: { onUpdate?: (s: string) => void; signal?: AbortSignal }
     ): Promise<{ code: number }> => {
       calls.push(args);
       return Promise.resolve({ code: 0 });
@@ -347,26 +347,93 @@ test("first index names the default model; PI_ZG_EMBEDDING overrides it", async 
   );
 });
 
-test("stale and rebuild-required indexes refresh without --embedding", async () => {
-  const cases: [string, string[]][] = [
-    ["needs update", ["--index", RESOLVED_ROOT]],
-    ["rebuild required", ["--index", RESOLVED_ROOT, "--rebuild"]],
-  ];
-  const runners = cases.map(([note]) =>
-    fakeRunner({ probeStatus: notReadyStatus(note) })
+test("rebuild-required indexes rebuild without --embedding", async () => {
+  const r = fakeRunner({ probeStatus: notReadyStatus("rebuild required") });
+  await createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--index"),
+    [["--index", RESOLVED_ROOT, "--rebuild"]],
+    "a pre-0.3.0 index is unreadable and must be rebuilt"
   );
-  await Promise.all(
-    runners.map((r) =>
-      createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex()
-    )
+});
+
+// Captured from `zg 0.3.0 --status --check-ready` on an indexed repo with two
+// pending edits: exit 1 plus this Coverage line. Queries still answer from that
+// index (hits stamped `status: possibly_stale`), so a build here would block the
+// first query of the session for nothing — the daemon refreshes in the
+// background, and mode/`--refresh wait` forces it on demand.
+const STALE_COVERAGE =
+  "  Coverage    ██████████░░░░░░░░░░  50%  2 / 4 files (needs update)\n";
+const staleStatus =
+  () => (): Promise<{ code: number; stderr: string; stdout: string }> =>
+    Promise.resolve({
+      code: 1,
+      stderr: "Error: workspace index is not ready\n",
+      stdout: STALE_COVERAGE,
+    });
+
+test("a usable stale index is served, not rebuilt, and the daemon starts", async () => {
+  const r = fakeRunner({ probeStatus: staleStatus() });
+  const res = await createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
+  assert.deepEqual(res, {}, "a stale index is not an error");
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--index"),
+    [],
+    "the index answers queries; a build would block the first call"
   );
-  for (const [i, [note, expected]] of cases.entries()) {
-    assert.deepEqual(
-      runners[i].calls.filter((c) => c[0] === "--index"),
-      [expected],
-      note
-    );
-  }
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--server"),
+    [["--server", "on"]],
+    "the daemon owns the refresh"
+  );
+});
+
+test("a failed build surfaces zg's output even with no progress sink", async () => {
+  // The progress tail used to be collected only when the caller passed an
+  // onUpdate, so a build started without one (session warmup never passes one
+  // through ensureIndex) reported a bare exit code and no reason.
+  const r = fakeRunner({
+    probeStatus: notReadyStatus("index not configured"),
+    stream: (args, o): Promise<{ code: number }> => {
+      assert.equal(args[0], "--index");
+      o?.onUpdate?.("Indexing: 0/3 files");
+      o?.onUpdate?.("Error: failed to load local/potion-code-16m-v2");
+      return Promise.resolve({ code: 1 });
+    },
+  });
+  const res = await createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
+  assert.match(res.error ?? "", /exit 1/u);
+  assert.match(
+    res.error ?? "",
+    /Last output:[\s\S]*failed to load local\/potion-code-16m-v2/u,
+    "the last build output must ride along"
+  );
+});
+
+test("an aborted build is neither an error nor memoized", async () => {
+  // Aborting is how a session reload (or Esc on a tool call) stops a build. If
+  // that counted as a failed index, every later call in the new session would
+  // answer "previous build attempt failed" and never index again.
+  const ctrl = new AbortController();
+  let builds = 0;
+  const r = fakeRunner({
+    probeStatus: notReadyStatus("index not configured"),
+    stream: (_args, o): Promise<{ code: number }> => {
+      builds += 1;
+      ctrl.abort();
+      return o?.signal?.aborted
+        ? Promise.reject(
+            new DOMException("This operation was aborted", "AbortError")
+          )
+        : Promise.resolve({ code: 0 });
+    },
+  });
+  const zg = createZg(r, { env: {}, root: RESOLVED_ROOT });
+  const owner = await zg.ensureIndex({ signal: ctrl.signal });
+  assert.deepEqual(owner, {}, "a cancelled build is not an index error");
+  const retry = await zg.ensureIndex();
+  assert.deepEqual(retry, {}, "no failedRoots memo from an abort");
+  assert.equal(builds, 2, "the next call starts a fresh build");
 });
 
 test("getOrCreateZg returns distinct chains for distinct cwds", () => {
@@ -452,4 +519,24 @@ test("a ready index in the home directory is still used", async () => {
   const r = fakeRunner();
   const zg = createZg(r, { exists: () => false, home, root: home });
   assert.deepEqual(await zg.ensureIndex(), {});
+});
+
+test("a stale parent index still builds this repo across a boundary", async () => {
+  // "needs update" may describe a parent folder's index. Inside a repo with a
+  // `.git` boundary that index is not this repo's, so the stale shortcut must
+  // not swallow the build the boundary guard asks for.
+  const r = fakeRunner({ probeStatus: staleStatus() });
+  const zg = createZg(r, {
+    exists: existsIn(
+      path.join(parentDir, ".zvec-grep", "manifest.json"),
+      path.join(repoDir, ".git")
+    ),
+    root: repoDir,
+  });
+  await zg.ensureIndex();
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--index"),
+    [["--index", repoDir, "--mode", "direct"]],
+    "the repo still gets its own index"
+  );
 });

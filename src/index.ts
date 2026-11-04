@@ -1419,11 +1419,21 @@ export const sessionWarmup = async (
   // Injectable bundled-engine resolver, same contract as makeRunner's. Tests
   // pass `() => null` so warmup never probes this repo's node_modules and never
   // runs a real `zg --index` against a scratch directory.
-  resolveEngine?: () => LocalEngine | null
+  resolveEngine?: () => LocalEngine | null,
+  // Aborted by the next session_start or by session_shutdown (see
+  // registerSessionWarmup). The warmup outlives the ctx that started it, so a
+  // reload must be able to stop the build instead of leaving it running.
+  signal?: AbortSignal
 ): Promise<void> => {
+  // A session that is already gone wants no spawn and no status line.
+  if (signal?.aborted) {
+    return;
+  }
   const ui = safeUi(ctx);
   const onProgress = (s: string): void => {
-    ui.setStatus("pi-zg", s.slice(0, 80));
+    if (!signal?.aborted) {
+      ui.setStatus("pi-zg", s.slice(0, 80));
+    }
   };
   const chain = getOrCreateZg({
     cwd: ctx.cwd,
@@ -1452,23 +1462,43 @@ export const sessionWarmup = async (
       return;
     }
     ui.setStatus("pi-zg", "checking index…");
-    const idx = await chain.zg.ensureIndex();
-    if (idx.error) {
+    const idx = await chain.zg.ensureIndex({ signal });
+    // Nothing to report to a session that ended mid-warmup: the build was
+    // cancelled on purpose and its exit code is only that cancellation's corpse.
+    if (idx.error && !signal?.aborted) {
       ui.notify(`zg warmup: ${idx.error}`, "error");
     }
   } catch {
     // Warmup must never break session start; the tool path surfaces real
     // errors (install failures, PI_ZG_BIN misconfig) to the agent.
   } finally {
-    ui.setStatus("pi-zg", undefined);
+    if (!signal?.aborted) {
+      ui.setStatus("pi-zg", undefined);
+    }
   }
 };
 
-const registerSessionWarmup = (pi: ExtensionAPI): void => {
+export const registerSessionWarmup = (pi: ExtensionAPI): void => {
+  // One live warmup per extension instance. A reload (`/new`, resume) and a
+  // shutdown both replace the ctx while the previous build may still be
+  // running, so it is cancelled instead of streaming into a dead session.
+  let activeWarmup: AbortController | undefined;
   pi.on("session_start", (_event, ctx) => {
+    activeWarmup?.abort();
+    activeWarmup = new AbortController();
     // Fire-and-forget: never block startup on an index build. Reload/resume
     // re-runs it — two cheap spawns on a warm repo.
-    void sessionWarmup(ctx);
+    void sessionWarmup(
+      ctx,
+      process.env,
+      homedir(),
+      undefined,
+      activeWarmup.signal
+    );
+  });
+  pi.on("session_shutdown", () => {
+    activeWarmup?.abort();
+    activeWarmup = undefined;
   });
 };
 

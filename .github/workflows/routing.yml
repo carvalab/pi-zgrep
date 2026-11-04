@@ -1,0 +1,181 @@
+# Routing eval: does a real pi session reach for `zg` on its own?
+#
+# Layer 2 (pull requests): when a PR touches the guidance surface — the tool
+# description and guidelines in src/index.ts, the skill text, the eval itself,
+# or the pinned pi version in package.json — run the small gated subset
+# (concept + holdout, guidance on, 2 runs = 20 sessions) and fail below the
+# threshold. The gate is the first search-like tool of the sessions that
+# searched: choosing grep, find or read over zg is a routing failure, a session
+# that answered from memory is reported as no-tool and is not one.
+#
+# Layer 3 (weekly + manual): the full 96-session matrix, JSON kept as an
+# artifact, table in the step summary, red only on a threshold breach.
+#
+# Both layers treat a provider error as INCONCLUSIVE (exit 0, reason in the
+# step summary), matching the pi integration job: a rate-limited model tells us
+# nothing about routing, and a build that goes red for it gets ignored. So does
+# a gate population with fewer than four searching sessions.
+#
+# Without OPENROUTER_API_KEY (fork PRs) the job skips with a notice.
+
+name: Routing eval
+
+on:
+  pull_request:
+    paths:
+      - src/index.ts
+      - skills/**
+      - tools/routing-eval.mjs
+      - package.json
+      - .github/workflows/routing.yml
+  schedule:
+    # Mondays 06:30 UTC, after the upstream canary at 06:00.
+    - cron: "30 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: routing-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Layer 2: the PR gate.
+  routing:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Look for the provider key
+        id: key
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -n "${OPENROUTER_API_KEY}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "### Routing eval — SKIPPED"
+              echo
+              echo "OPENROUTER_API_KEY is not available (fork PR), so the"
+              echo "guidance subset did not run. This is not a failure."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Routing eval skipped::OPENROUTER_API_KEY is unset, typically a fork PR."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.key.outputs.present == 'true'
+        run: npm ci
+
+      - name: Install pi
+        if: steps.key.outputs.present == 'true'
+        run: npm install -g @earendil-works/pi-coding-agent
+
+      # The express clone is indexed once and reused; a cold index build inside
+      # a session would bias the choice the eval measures.
+      - name: Cache the workspace and embedding model
+        if: steps.key.outputs.present == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/zg-bench/express
+            ~/.zvec-grep/models
+          key: zg-bench-express-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Run the gated subset
+        if: steps.key.outputs.present == 'true'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # A pinned, cheap, tool-capable OpenRouter model. Override the repo
+          # variable to re-point the gate without touching the workflow.
+          PI_MODEL: ${{ vars.ROUTING_EVAL_MODEL || 'openrouter/openai/gpt-oss-20b' }}
+          ROUTING_THRESHOLD: ${{ vars.ROUTING_THRESHOLD || '80' }}
+        run: |
+          node tools/routing-eval.mjs \
+            --model "$PI_MODEL" \
+            --subset concept,holdout \
+            --guidance 1 \
+            --runs 2 \
+            --concurrency 4 \
+            --threshold "$ROUTING_THRESHOLD" \
+            --json routing-eval.json
+
+      - name: Upload the results
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: routing-eval
+          path: routing-eval.json
+          retention-days: 14
+
+  # Layer 3: the full matrix, weekly.
+  routing-full:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Look for the provider key
+        id: key
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [ -n "${OPENROUTER_API_KEY}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "### Routing eval — SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Routing eval skipped::OPENROUTER_API_KEY is unset."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.key.outputs.present == 'true'
+        run: npm ci
+
+      - name: Install pi
+        if: steps.key.outputs.present == 'true'
+        run: npm install -g @earendil-works/pi-coding-agent
+
+      - name: Cache the workspace and embedding model
+        if: steps.key.outputs.present == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/zg-bench/express
+            ~/.zvec-grep/models
+          key: zg-bench-express-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Run the full matrix
+        if: steps.key.outputs.present == 'true'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PI_MODEL: ${{ vars.ROUTING_EVAL_MODEL || 'openrouter/openai/gpt-oss-20b' }}
+          ROUTING_THRESHOLD: ${{ vars.ROUTING_THRESHOLD || '80' }}
+        run: |
+          node tools/routing-eval.mjs \
+            --model "$PI_MODEL" \
+            --runs 3 \
+            --concurrency 4 \
+            --threshold "$ROUTING_THRESHOLD" \
+            --json routing-eval-full.json
+
+      - name: Upload the results
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: routing-eval-full
+          path: routing-eval-full.json
+          retention-days: 90

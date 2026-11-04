@@ -320,7 +320,13 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     // told which model to use, otherwise a bare `--index` has nothing to
     // resolve and every query answers [ZG.ENGINE.NOT_FOUND] instead of
     // searching (crates/zg/src/main.rs:620-625 refuses to auto-create it).
-    const newIndex = isNewIndexState(freshness);
+    // A status note describes the index zg resolves from this cwd, which may be
+    // a parent folder's, while the build targets plan.buildRoot. When that root
+    // has no index of its own — a repo nested under an indexed parent, the
+    // 0.6.0 boundary case — the build starts from nothing exactly like a fresh
+    // workspace and needs the model named for the same reason.
+    const newIndex =
+      isNewIndexState(freshness) || plan.indexRoot !== plan.buildRoot;
     // Synchronously assign buildP before any await so concurrent riders see
     // it set and join the in-flight build instead of falling into the
     // failedRoots memo branch above. failedRoots is mutated only inside the

@@ -473,8 +473,38 @@ test("ready status from a parent folder's index across a repo boundary still bui
   assert.deepEqual(res, {});
   assert.deepEqual(
     r.calls.filter((c) => c[0] === "--index"),
-    [["--index", repoDir, "--mode", "direct"]],
-    "build must name the repo root explicitly (zg resolves a child query to the parent index)"
+    [
+      [
+        "--index",
+        "--embedding",
+        "local/potion-code-16m-v2",
+        repoDir,
+        "--mode",
+        "direct",
+      ],
+    ],
+    "build must name the repo root explicitly, and the model: this repo has no index of its own"
+  );
+});
+
+// The status note describes the index zg resolves from cwd — the parent's —
+// while the build targets this repo. `plan.indexRoot !== plan.buildRoot` is the
+// signal that the target starts from nothing, the one case that must name an
+// embedding model (see ensureIndex in src/zg.ts).
+test("a repo nested under an indexed parent names the model for its first build", async () => {
+  const r = fakeRunner();
+  const zg = createZg(r, {
+    exists: existsIn(
+      path.join(parentDir, ".zvec-grep", "manifest.json"),
+      path.join(repoDir, ".git")
+    ),
+    root: repoDir,
+  });
+  await zg.ensureIndex();
+  const build = r.calls.find((c) => c[0] === "--index") ?? [];
+  assert.ok(
+    build.includes("--embedding"),
+    `first build of ${repoDir} must name a model, got ${JSON.stringify(build)}`
   );
 });
 
@@ -495,9 +525,11 @@ test("cold build always passes an explicit root", async () => {
   });
   const zg = createZg(r, { exists: () => false, root: repoDir });
   await zg.ensureIndex();
+  // Unparseable status ("not ready") with no index in the plan: the target
+  // starts from nothing, so the model is named as well (see ensureIndex).
   assert.deepEqual(
     r.calls.filter((c) => c[0] === "--index"),
-    [["--index", repoDir]]
+    [["--index", "--embedding", "local/potion-code-16m-v2", repoDir]]
   );
 });
 
@@ -536,7 +568,16 @@ test("a stale parent index still builds this repo across a boundary", async () =
   await zg.ensureIndex();
   assert.deepEqual(
     r.calls.filter((c) => c[0] === "--index"),
-    [["--index", repoDir, "--mode", "direct"]],
+    [
+      [
+        "--index",
+        "--embedding",
+        "local/potion-code-16m-v2",
+        repoDir,
+        "--mode",
+        "direct",
+      ],
+    ],
     "the repo still gets its own index"
   );
 });

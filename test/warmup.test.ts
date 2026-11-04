@@ -21,10 +21,11 @@ import { safeUi, sessionWarmup } from "../src/index.ts";
 const makeFakeZg = (dir: string, log: string): string => {
   const p = path.join(dir, "zg");
   // Log every argv[0]; --version prints a version so probe caches it, the
-  // `status --check-ready` route falls through to exit 0 (index ready).
+  // `--status --check-ready` route falls through to exit 0 (index ready).
+  // The version must be >= 0.3.0: the runner refuses anything older.
   writeFileSync(
     p,
-    `#!/bin/sh\necho "$1" >> ${JSON.stringify(log)}\ncase "$1" in\n  --version) echo "0.2.1" ;;\nesac\nexit 0\n`
+    `#!/bin/sh\necho "$1" >> ${JSON.stringify(log)}\ncase "$1" in\n  --version) echo "0.3.0" ;;\nesac\nexit 0\n`
   );
   chmodSync(p, 0o755);
   return p;
@@ -59,11 +60,19 @@ const withTempDir = async (
   }
 };
 
+// Both cases inject `() => null` as the bundled-engine resolver: warmup must
+// never fall back to this repo's own node_modules, so no real `zg --index` can
+// run against a scratch directory inside a unit test.
 test("warmup with ready index: probes + status-checks, no build, clears status", async () => {
   await withTempDir(async (dir) => {
     const log = path.join(dir, "calls.log");
     const { calls, ui } = makeUi();
-    await sessionWarmup({ cwd: dir, ui }, { PI_ZG_BIN: makeFakeZg(dir, log) });
+    await sessionWarmup(
+      { cwd: dir, ui },
+      { PI_ZG_BIN: makeFakeZg(dir, log) },
+      path.join(dir, "home"),
+      () => null
+    );
     // The daemon start is fire-and-forget, so its log line can land after
     // warmup resolves. The probe and status spawns are awaited.
     await delay(500);
@@ -71,9 +80,9 @@ test("warmup with ready index: probes + status-checks, no build, clears status",
       readFileSync(log, "utf-8").split("\n").filter(Boolean)
     );
     assert.ok(argv0.has("--version"), "probe must run zg --version");
-    assert.ok(argv0.has("status"), "ensureIndex must run zg status");
-    assert.ok(argv0.has("server"), "warmup must attempt the daemon start");
-    assert.ok(!argv0.has("index"), "ready index must not trigger a build");
+    assert.ok(argv0.has("--status"), "ensureIndex must run zg --status");
+    assert.ok(argv0.has("--server"), "warmup must attempt the daemon start");
+    assert.ok(!argv0.has("--index"), "ready index must not trigger a build");
     assert.equal(calls.filter((c) => c.startsWith("notify:")).length, 0);
     assert.equal(calls.at(-1), "status:cleared");
   });
@@ -84,7 +93,9 @@ test("warmup with missing binary: bails with no spawns and no install", async ()
     const { calls, ui } = makeUi();
     await sessionWarmup(
       { cwd: dir, ui },
-      { PI_ZG_BIN: "/nonexistent/zg-binary-xyz" }
+      { PI_ZG_BIN: "/nonexistent/zg-binary-xyz" },
+      path.join(dir, "home"),
+      () => null
     );
     assert.deepEqual(calls, ["status:cleared"]);
   });
@@ -114,7 +125,9 @@ test("warmup does not throw when the ctx went stale mid-flight (print mode)", as
     };
     const warm = sessionWarmup(
       { cwd: dir, ui },
-      { PI_ZG_BIN: makeFakeZg(dir, log) }
+      { PI_ZG_BIN: makeFakeZg(dir, log) },
+      path.join(dir, "home"),
+      () => null
     );
     live = false;
     await assert.doesNotReject(warm);

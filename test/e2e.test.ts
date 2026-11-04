@@ -1,47 +1,36 @@
-// End-to-end test against the real `zg` binary. Skipped unless
-// ZG_TEST_E2E=1 (run with `npm run test:e2e` or
-// `ZG_TEST_E2E=1 node --test test/e2e.test.ts`).
+// End-to-end tests against the real zg 0.3.0 engine. Skipped unless
+// ZG_TEST_E2E=1 (run with `npm run test:e2e`).
 //
-// Each test copies test/fixtures/sample-project into a fresh scratch
-// directory and reindexes locally — no network, the embedding model is
-// already cached from the fixture capture. The fixture's hello.ts
-// declares `loadTheme()`, which is the only indexed symbol, so any
-// route that resolves "hello.ts" or "loadTheme" is a relevant hit.
+// 0.3.0 behavior these tests pin (verified against the bundled native binary):
+//   - the CLI is flag-shaped: `--index`, `--status --check-ready`,
+//     `--hybrid|--fts|--vector <query>`, `--rg <pattern>`, `--server on|off|status`.
+//     The 0.2.x subcommands (query/index/status) are gone.
+//   - `--rg` rejects the indexed options (--preview/--mode/--refresh), so
+//     buildQueryArgs drops them; see src/args.ts.
+//   - a fresh directory is not ready (`--status --check-ready` exits non-zero)
+//     and needs one `--index` before the indexed routes answer.
 //
-// Observed real `zg` v0.2.1 behavior (captured 2026 against the global
-// install on this machine):
-//   - `zg status --check-ready` exits 1 with "Workspace index is not
-//     ready (state: undecided)" on a fresh dir. Good — the probe
-//     assertion below relies on status !== 0.
-//   - `zg index` is required before any indexed query route (fts/
-//     vector/hybrid). It is NOT required for `--rg` (rg walks files
-//     directly), but we index anyway to keep the test hermetic.
-//   - `zg query <q> --limit N --preview short --mode auto` works for
-//     hybrid/fts/vector routes and matches hello.ts for the canned
-//     queries below.
-//   - `zg query --rg <pattern> --limit N` returns ripgrep-shaped output
-//     (file path then `line: <content>` lines) — does NOT include
-//     "hello.ts" and "loadTheme" in any structured way other than the
-//     filename and the matched line itself, which is enough for the
-//     lenient `/hello\.ts|loadTheme/u` assertion.
-//   - `--rg` REJECTS `--preview` and `--mode` ("--preview is not
-//     supported with --rg; use -A/-B/-C for rg context"). buildQueryArgs
-//     drops those flags for rg (see src/args.ts), and the e2e loop
-//     therefore passes only `--limit N` (plus `-g *.ts`) for the rg
-//     slot, so it works as-is.
-//   - `zg query` with no query and no --hybrid/--fts/--vector is
-//     rejected ("zg query requires a query or --hybrid/--fts/--vector
-//     route"). The "hybrid" slot therefore carries an explicit
-//     positional query — hybrid is the default route when a positional
-//     query is supplied.
+// The fixture's hello.ts declares `loadTheme()`, the only indexed symbol, so
+// every route below finds it. No network: the embedding model is already
+// cached from the fixture capture.
+//
+// Three install scenarios live here because they need the real packages:
+// (a) `npm pack` + `npm install --ignore-scripts` still resolves the engine
+//     through the per-platform optional dependency (the postinstall stub stays
+//     un-materialized), and a real query through the runner returns results;
+// (b) an old `zg` first on PATH must lose to the bundled 0.3.0 engine;
+// (c) PI_ZG_BIN pointing at that old `zg` is a single clear error — no
+//     fallback to the bundled engine, no PATH lookup, no install.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -50,11 +39,17 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildQueryArgs } from "../src/args.ts";
-import { makeRunner } from "../src/index.ts";
+import {
+  buildIndexArgs,
+  buildQueryArgs,
+  buildStatusArgs,
+} from "../src/args.ts";
+import { makeRunner, resolveLocalEngine } from "../src/index.ts";
 import { createZg } from "../src/zg.ts";
 
 const ok = process.env.ZG_TEST_E2E === "1";
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+
 const scratch = (): string => {
   const dir = mkdtempSync(`${tmpdir()}/pi-zg-e2e-`);
   cpSync(
@@ -65,75 +60,63 @@ const scratch = (): string => {
   return dir;
 };
 
-(ok ? test : test.skip)(
-  "e2e: probe, index, hybrid query finds hello.ts",
-  (t) => {
-    const dir = scratch();
-    t.after(() => rmSync(dir, { force: true, recursive: true }));
-    const probe = spawnSync("zg", ["status", "--check-ready"], {
-      cwd: dir,
-      encoding: "utf-8",
-    });
-    assert.ifError(probe.error);
-    assert.notEqual(probe.status, 0, "fresh scratch dir must not be ready");
-    const index = spawnSync("zg", ["index"], { cwd: dir, encoding: "utf-8" });
-    assert.equal(index.status, 0, `zg index failed: ${index.stderr}`);
-    const r = spawnSync(
-      "zg",
-      buildQueryArgs({
-        limit: 5,
-        mode: "hybrid",
-        preview: "short",
-        query: "where is the theme restored",
-      }),
-      { cwd: dir, encoding: "utf-8" }
-    );
-    assert.equal(r.status, 0, `zg query failed: ${r.stderr}`);
-    assert.match(r.stdout, /hello\.ts/u);
-  }
-);
+// A real `zg` 0.2.1 stand-in: it answers `--version` with 0.2.1 and logs every
+// argv[1] it receives, so a test can prove it was (or was not) executed.
+const makeOldZg = (dir: string, log: string): string => {
+  const bin = path.join(dir, "zg");
+  mkdirSync(path.dirname(bin), { recursive: true });
+  writeFileSync(
+    bin,
+    `#!/bin/sh\necho "$1" >> ${JSON.stringify(log)}\ncase "$1" in\n  --version) echo "0.2.1" ;;\n  *) exit 1 ;;\nesac\nexit 0\n`
+  );
+  chmodSync(bin, 0o755);
+  return bin;
+};
 
-(ok ? test : test.skip)("e2e: all four routes return hits", (t) => {
-  const dir = scratch();
-  t.after(() => rmSync(dir, { force: true, recursive: true }));
-  const index = spawnSync("zg", ["index"], { cwd: dir, encoding: "utf-8" });
-  assert.equal(index.status, 0, `zg index failed: ${index.stderr}`);
-  // Every route's argv is built by buildQueryArgs, so the e2e doubles
-  // as a smoke test of the builder against the real binary. rg omits
-  // --preview/--mode/--refresh internally; we still pass preview:
-  // "none" because QueryInput requires it. glob: "*.ts" on the rg slot
-  // exercises the -g branch on the non-indexed path.
-  const modes = [
+// `npm run test:e2e` exports its own npm_config_* environment (notably a
+// project-scoped npm_config_allow_scripts, which npm 11 rejects as
+// EALLOWSCRIPTS inside a child install). Strip those so the child npm is a
+// clean, plain install.
+const npmEnv = (): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key, value]) =>
+        value !== undefined && !key.toLowerCase().startsWith("npm_config_")
+    )
+  ) as Record<string, string>;
+
+const indexThenQuery = async (
+  runner: ReturnType<typeof makeRunner>,
+  dir: string
+): Promise<void> => {
+  const index = await runner.stream(buildIndexArgs(), { cwd: dir });
+  assert.equal(index.code, 0, `zg --index failed (exit ${index.code})`);
+  const routes = [
     {
       mode: "hybrid",
       preview: "short",
       query: "where is the theme restored",
     },
     { mode: "fts", preview: "none", query: "loadTheme" },
-    {
-      mode: "vector",
-      preview: "none",
-      query: "restore user theme at startup",
-    },
+    { mode: "vector", preview: "none", query: "restore user theme" },
     { glob: "*.ts", mode: "rg", preview: "none", query: "loadTheme" },
   ] as const;
-  for (const m of modes) {
-    const r = spawnSync("zg", buildQueryArgs({ limit: 5, ...m }), {
-      cwd: dir,
-      encoding: "utf-8",
-    });
+  for (const route of routes) {
+    // Sequential on purpose: one engine, four routes, readable failures.
+    // oxlint-disable-next-line no-await-in-loop
+    const res = await runner.run(buildQueryArgs({ limit: 5, ...route }));
     assert.equal(
-      r.status,
+      res.code,
       0,
-      `route ${m.mode} exited ${r.status}: ${r.stderr}`
+      `route ${route.mode} exited ${res.code}: ${res.stderr}`
     );
     assert.match(
-      r.stdout,
+      res.stdout,
       /hello\.ts|loadTheme/u,
-      `route ${m.mode} returned no relevant hit`
+      `route ${route.mode} returned no relevant hit:\n${res.stdout}`
     );
   }
-});
+};
 
 // Regression, live 2026-10-16: a stray ~/Dev/.zvec-grep captured every repo
 // below it. Upstream walks up to the nearest index with no repo boundary, and
@@ -157,13 +140,16 @@ const scratch = (): string => {
       { recursive: true }
     );
     const env = { ...process.env, PI_ZG_SERVER: "1" };
-    const parentIndex = spawnSync("zg", ["index", parent], {
+    const bundledZg = resolveLocalEngine(REPO_ROOT).cli;
+    assert.ok(bundledZg, "this checkout must ship the platform engine");
+    // 0.3.0 CLI: `--index [root]` / `--status --check-ready`, no subcommands.
+    const parentIndex = spawnSync(bundledZg, ["--index", parent], {
       cwd: parent,
       encoding: "utf-8",
       env,
     });
     assert.equal(parentIndex.status, 0, `parent index: ${parentIndex.stderr}`);
-    const before = spawnSync("zg", ["status", "--check-ready"], {
+    const before = spawnSync(bundledZg, ["--status", "--check-ready"], {
       cwd: child,
       encoding: "utf-8",
       env,
@@ -208,5 +194,241 @@ const scratch = (): string => {
     lines.length = 0;
     assert.deepEqual(await zg.ensureIndex(), {});
     assert.deepEqual(lines, [], "ready index must not rebuild");
+  }
+);
+
+(ok ? test : test.skip)(
+  "e2e: bundled 0.3.0 engine indexes the fixture and every route answers",
+  async (t) => {
+    const dir = scratch();
+    t.after(() => rmSync(dir, { force: true, recursive: true }));
+    const bundled = resolveLocalEngine(REPO_ROOT).cli;
+    assert.ok(bundled, "this checkout must ship the platform engine");
+
+    const runner = makeRunner({ cwd: dir, env: { ...process.env } });
+    assert.equal(await runner.probe(), bundled);
+    assert.match(runner.version?.() ?? "", /^0\.3\.0/u);
+    await indexThenQuery(runner, dir);
+  }
+);
+
+// First-time user on a fresh clone: empty workspace, empty ZVEC_GREP_HOME (no
+// global config, no cached model), no ZVEC_GREP_EMBEDDING/PI_ZG_EMBEDDING. zg
+// refuses to create an index from a non-interactive query
+// (crates/zg/src/main.rs:620-625), so the extension's own build has to name the
+// model — that is the whole of the first-index fix — and the query that follows
+// must return hits.
+(ok ? test : test.skip)(
+  "e2e: fresh workspace and fresh home auto-index and answer a query",
+  async (t) => {
+    const bundled = resolveLocalEngine(REPO_ROOT).cli;
+    assert.ok(bundled, "this checkout must ship the platform engine");
+
+    const home = mkdtempSync(`${tmpdir()}/pi-zg-fresh-home-`);
+    const dir = scratch();
+    t.after(() => {
+      rmSync(dir, { force: true, recursive: true });
+      rmSync(home, { force: true, recursive: true });
+    });
+
+    // Nothing may smuggle a model in: no configured default, no shared model
+    // cache, no daemon carried over from the developer's session.
+    const stripped = new Set([
+      "ZVEC_GREP_EMBEDDING",
+      "ZVEC_GREP_MODEL_CACHE",
+      "ZVEC_GREP_MODE",
+      "ZVEC_GREP_DEVICE",
+      "PI_ZG_EMBEDDING",
+      "PI_ZG_MODE",
+      "PI_ZG_SERVER",
+    ]);
+    const env = Object.fromEntries([
+      ...Object.entries(process.env).filter(([key]) => !stripped.has(key)),
+      ["ZVEC_GREP_HOME", home],
+    ]);
+
+    const runner = makeRunner({ cwd: dir, env });
+    const zg = createZg(runner, { env, root: dir });
+    const idx = await zg.ensureIndex();
+    if (idx.error !== undefined) {
+      // Offline (or proxy-blocked) machine: the model cannot be fetched. The
+      // emitted arguments are pinned by test/args.test.ts, so skipping here
+      // loses no coverage of the fix itself.
+      assert.match(
+        String(idx.error),
+        /download|network|connect|offline|proxy|tls|timed? ?out/iu,
+        `unexpected first-index failure: ${idx.error}`
+      );
+      t.skip(`model download unavailable: ${idx.error}`);
+      return;
+    }
+
+    const status = await runner.run(buildStatusArgs());
+    assert.equal(status.code, 0, `index not ready: ${status.stdout}`);
+    assert.match(
+      status.stdout,
+      /Embedding\s+local\/potion-code-16m-v2/u,
+      `first index did not use the built-in model:\n${status.stdout}`
+    );
+
+    const res = await runner.run(
+      buildQueryArgs({
+        limit: 5,
+        mode: "fts",
+        preview: "none",
+        query: "loadTheme",
+      })
+    );
+    assert.equal(res.code, 0, `query exited ${res.code}: ${res.stderr}`);
+    assert.match(res.stdout, /hello\.ts|loadTheme/u, `no hits:\n${res.stdout}`);
+  }
+);
+
+(ok ? test : test.skip)(
+  "e2e: npm install --ignore-scripts still resolves the engine and a query returns hits",
+  async (t) => {
+    const tmp = mkdtempSync(`${tmpdir()}/pi-zg-pack-`);
+    t.after(() => rmSync(tmp, { force: true, recursive: true }));
+
+    const pack = spawnSync(
+      "npm",
+      ["pack", "--pack-destination", tmp, "--silent"],
+      { cwd: REPO_ROOT, encoding: "utf-8", env: npmEnv() }
+    );
+    assert.equal(pack.status, 0, `npm pack failed: ${pack.stderr}`);
+    const tarball = path.join(
+      tmp,
+      pack.stdout.trim().split("\n").pop()?.trim() ?? ""
+    );
+    assert.ok(existsSync(tarball), `no tarball at ${tarball}`);
+
+    writeFileSync(
+      path.join(tmp, "package.json"),
+      JSON.stringify({ name: "pi-zgrep-e2e-host", private: true })
+    );
+    // --ignore-scripts is the npm-12 default for dependencies (RFC 0054) and
+    // is what pi's installer effectively gets: the meta package's postinstall
+    // never runs, so bin/zg.exe stays the "not materialized" stub. The engine
+    // must still be found in the optional per-platform package.
+    // --legacy-peer-deps keeps npm from reaching for the pi host package,
+    // which this test does not need.
+    const install = spawnSync(
+      "npm",
+      [
+        "install",
+        "--ignore-scripts",
+        "--legacy-peer-deps",
+        "--no-audit",
+        "--no-fund",
+        "--prefer-offline",
+        tarball,
+      ],
+      { cwd: tmp, encoding: "utf-8", env: npmEnv() }
+    );
+    assert.equal(install.status, 0, `npm install failed: ${install.stderr}`);
+
+    const stub = path.join(
+      tmp,
+      "node_modules",
+      "@zvec",
+      "zvec-grep",
+      "bin",
+      "zg.exe"
+    );
+    assert.ok(existsSync(stub), "install must leave the meta package in place");
+    assert.match(
+      readFileSync(stub, "utf-8"),
+      /not materialized/u,
+      "expected the un-materialized install stub (proves the platform package is what gets used)"
+    );
+
+    // Resolve exactly as the installed package does at runtime: it walks up
+    // from its own src/ directory into the host's node_modules.
+    const installedSrc = path.join(tmp, "node_modules", "pi-zgrep", "src");
+    const engine = resolveLocalEngine(installedSrc);
+    assert.ok(
+      engine.cli,
+      `installed package found no engine: ${engine.problems}`
+    );
+    assert.ok(
+      engine.cli.startsWith(path.join(tmp, "node_modules")),
+      `engine must come from the install, got ${engine.cli}`
+    );
+
+    const dir = scratch();
+    t.after(() => rmSync(dir, { force: true, recursive: true }));
+    const runner = makeRunner({
+      cwd: dir,
+      env: { ...process.env },
+      resolveEngine: () => resolveLocalEngine(installedSrc),
+    });
+    assert.equal(await runner.probe(), engine.cli);
+    await indexThenQuery(runner, dir);
+  }
+);
+
+(ok ? test : test.skip)(
+  "e2e: a 0.2.1 zg first on PATH loses to the bundled 0.3.0 engine",
+  async (t) => {
+    const tmp = mkdtempSync(`${tmpdir()}/pi-zg-path-`);
+    t.after(() => rmSync(tmp, { force: true, recursive: true }));
+    const log = path.join(tmp, "calls.log");
+    const oldZg = makeOldZg(tmp, log);
+    const bundled = resolveLocalEngine(REPO_ROOT).cli;
+    assert.ok(bundled, "this checkout must ship the platform engine");
+
+    const dir = scratch();
+    t.after(() => rmSync(dir, { force: true, recursive: true }));
+    const runner = makeRunner({
+      cwd: dir,
+      env: {
+        ...process.env,
+        PATH: `${path.dirname(oldZg)}:${process.env.PATH ?? ""}`,
+      },
+    });
+
+    assert.equal(await runner.probe(), bundled);
+    assert.match(runner.version?.() ?? "", /^0\.3\.0/u);
+    assert.ok(
+      !existsSync(log),
+      "the 0.2.x binary on PATH must not be executed at all"
+    );
+  }
+);
+
+(ok ? test : test.skip)(
+  "e2e: PI_ZG_BIN pointing at a 0.2.1 zg is one clear error, no fallback",
+  async (t) => {
+    const tmp = mkdtempSync(`${tmpdir()}/pi-zg-bin-`);
+    t.after(() => rmSync(tmp, { force: true, recursive: true }));
+    const log = path.join(tmp, "calls.log");
+    const oldZg = makeOldZg(tmp, log);
+
+    const dir = scratch();
+    t.after(() => rmSync(dir, { force: true, recursive: true }));
+    const env = { ...process.env, PI_ZG_BIN: oldZg };
+    const runner = makeRunner({ cwd: dir, env });
+    const zg = createZg(runner, { env, root: dir });
+
+    await assert.rejects(zg.ensureBinary(), (error: Error) => {
+      const { message } = error;
+      assert.ok(
+        message.includes("PI_ZG_BIN"),
+        `error must name the variable: ${message}`
+      );
+      assert.ok(
+        message.includes(oldZg),
+        `error must name the path: ${message}`
+      );
+      assert.match(message, /0\.2\.1/u);
+      assert.match(message, /0\.3\.0/u);
+      return true;
+    });
+    // No fallback of any kind ran: the fake only ever saw `--version`, and
+    // nothing built an index.
+    assert.deepEqual(readFileSync(log, "utf-8").split("\n").filter(Boolean), [
+      "--version",
+    ]);
+    assert.ok(!existsSync(path.join(dir, ".zvec-grep")));
   }
 );

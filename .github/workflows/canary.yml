@@ -1,6 +1,7 @@
 # Weekly canary: run the test suite against @zvec/zvec-grep@latest.
 #
-# Dependabot only sees releases outside our ^0.2.1 range. This job catches
+# Dependabot only sees releases outside the engine range pinned in
+# package.json (dependencies["@zvec/zvec-grep"]). This job catches
 # breakage inside the allowed range and drift between our pin and upstream
 # latest: CLI flag changes, output shape changes (the fixtures under
 # test/fixtures/ are the tripwire), and e2e behavior on the real engine.
@@ -41,7 +42,8 @@ jobs:
       - name: Overlay the engine with upstream latest
         run: |
           latest=$(npm view @zvec/zvec-grep version)
-          echo "canary engine: @zvec/zvec-grep@$latest (package.json allows ^0.2.1)"
+          allowed=$(node -p "require('./package.json').dependencies['@zvec/zvec-grep']")
+          echo "canary engine: @zvec/zvec-grep@$latest (package.json allows $allowed)"
           npm install --ignore-scripts --no-save @zvec/zvec-grep@latest
 
       - name: Unit + e2e against latest

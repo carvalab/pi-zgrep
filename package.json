@@ -1,6 +1,62 @@
 {
+  "name": "pi-zgrep",
+  "version": "0.6.0",
+  "description": "Semantic, BM25, hybrid, and grep search for the pi coding agent, powered by the zg (zvec-grep) engine. One tool, auto-indexed, local-first. A semantic upgrade over ripgrep for code questions.",
+  "keywords": [
+    "ai-agent",
+    "ai-agents",
+    "bm25",
+    "code-search",
+    "coding-agent",
+    "embeddings",
+    "full-text-search",
+    "grep",
+    "hybrid-search",
+    "local-first",
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "pi-package",
+    "rag",
+    "ripgrep",
+    "search",
+    "semantic-search",
+    "vector-search",
+    "zg",
+    "zvec-grep"
+  ],
+  "homepage": "https://github.com/carvalab/pi-zgrep#readme",
+  "bugs": {
+    "url": "https://github.com/carvalab/pi-zgrep/issues"
+  },
+  "license": "MIT",
+  "author": "carvalab",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carvalab/pi-zgrep.git"
+  },
+  "files": [
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "lint": "oxlint src test --no-error-on-unmatched-pattern",
+    "format": "oxfmt src test --no-error-on-unmatched-pattern",
+    "format:check": "oxfmt --check src test --no-error-on-unmatched-pattern",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "test:e2e": "ZG_TEST_E2E=1 node --test \"test/*.test.ts\"",
+    "test:pi": "node tools/pi-integration.mjs"
+  },
   "dependencies": {
-    "@zvec/zvec-grep": "^0.2.2",
+    "@zvec/zvec-grep": "^0.3.0",
     "cross-spawn": "^7.0.6"
   },
   "devDependencies": {
@@ -13,69 +69,13 @@
     "typescript": "^5.5.0",
     "ultracite": "^8.0.1"
   },
-  "name": "pi-zgrep",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
-  "scripts": {
-    "lint": "oxlint src test --no-error-on-unmatched-pattern",
-    "format": "oxfmt src test --no-error-on-unmatched-pattern",
-    "format:check": "oxfmt --check src test --no-error-on-unmatched-pattern",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test \"test/*.test.ts\"",
-    "test:e2e": "ZG_TEST_E2E=1 node --test \"test/*.test.ts\"",
-    "test:pi": "node tools/pi-integration.mjs"
-  },
-  "type": "module",
-  "version": "0.6.0",
-  "description": "Semantic, BM25, hybrid, and grep search for the pi coding agent, powered by the zg (zvec-grep) engine. One tool, auto-indexed, local-first. A semantic upgrade over ripgrep for code questions.",
-  "author": "carvalab",
-  "keywords": [
-    "pi",
-    "pi-package",
-    "pi-extension",
-    "pi-coding-agent",
-    "zg",
-    "zvec-grep",
-    "ai-agent",
-    "ai-agents",
-    "bm25",
-    "code-search",
-    "coding-agent",
-    "embeddings",
-    "full-text-search",
-    "grep",
-    "hybrid-search",
-    "local-first",
-    "rag",
-    "ripgrep",
-    "search",
-    "semantic-search",
-    "vector-search"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/carvalab/pi-zgrep.git"
-  },
-  "bugs": {
-    "url": "https://github.com/carvalab/pi-zgrep/issues"
-  },
-  "homepage": "https://github.com/carvalab/pi-zgrep#readme",
   "engines": {
     "node": ">=22.18"
-  },
-  "files": [
-    "src",
-    "skills",
-    "README.md",
-    "LICENSE"
-  ],
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
   },
   "pi": {
     "extensions": [

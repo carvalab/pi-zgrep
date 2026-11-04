@@ -1,7 +1,6 @@
-? Workspace index is not configured
-  /tmp/tmp.EAkzBafaw1/sample-project
+  Coverage    Unavailable (rebuild required)
 
-  Storage     .zvec-grep/index.zvec
-  Policy      undecided
+  Embedding   Not configured
+  FTS         Not configured
 
-  Next        zg index or zg query --rg
+  Storage     .zvec-grep/index

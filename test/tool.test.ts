@@ -398,12 +398,18 @@ const makeFakeZg = (dir: string): string => {
   const p = path.join(dir, "fake-zg.mjs");
   writeFileSync(
     p,
+    // zg 0.3.0 CLI: `--version` reports >= 0.3.0 (the runner gates on it),
+    // `--status --check-ready` prints the Coverage block, and every search route
+    // is a flag rather than the old `query` subcommand.
     `import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_ZG_LOG, JSON.stringify(args) + "\\n");
-if (args[0] === "--version") { console.log("0.2.2"); process.exit(0); }
-if (args[0] === "status") { console.log("✓ Workspace index is ready"); process.exit(0); }
-if (args[0] === "query") {
+if (args[0] === "--version") { console.log("0.3.0"); process.exit(0); }
+if (args[0] === "--status") {
+  process.stdout.write("  Coverage    ████████████████████ 100%  1 / 1 files\\n");
+  process.exit(0);
+}
+if (["--hybrid", "--fts", "--vector", "--rg"].includes(args[0])) {
   process.stdout.write(readFileSync(process.env.FAKE_ZG_OUT, "utf-8"));
   process.stderr.write(process.env.FAKE_ZG_ERR ?? "");
   process.exit(Number(process.env.FAKE_ZG_CODE ?? 0));
@@ -483,14 +489,16 @@ test("execute: hybrid query returns text, details and structuredContent", async 
   const structured = result.structuredContent?.results as unknown[] | undefined;
   assert.equal(structured?.length, 1);
   assert.ok(Value.Check(ZgOutputSchema, result.structuredContent));
-  const query = log.find((a) => a[0] === "query");
+  const query = log.find((a) => a[0] === "--hybrid");
   assert.deepEqual(query, [
-    "query",
+    "--hybrid",
     "where is the theme restored",
     "--limit",
     "3",
     "--preview",
     "short",
+    "--color",
+    "never",
     "--mode",
     "auto",
   ]);
@@ -517,13 +525,17 @@ test("execute: engine failure is an error result with stderr", async (t) => {
   assert.equal(result.content[0]?.text, "zg error (exit 2): bad things");
 });
 
+// 0.3.0 accepts a leading "-" query (buildQueryArgs attaches it to the route
+// flag), so the remaining up-front guard is a filter value that would be read
+// as a flag by zg itself.
 test("execute: invalid input is rejected before any engine spawn", async (t) => {
-  const { log, result } = await runTool(t, { query: "-flag" }, { out: "" });
-  assert.equal(result.isError, true);
-  assert.match(
-    result.content[0]?.text ?? "",
-    /leading "-" queries must use mode=rg/u
+  const { log, result } = await runTool(
+    t,
+    { glob: "-x", query: "anything" },
+    { out: "" }
   );
+  assert.equal(result.isError, true);
+  assert.match(result.content[0]?.text ?? "", /glob must not start with "-"/u);
   assert.deepEqual(log, [], "no probe, install, status or build");
 });
 

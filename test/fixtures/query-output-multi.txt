@@ -1,0 +1,15 @@
+-- query 1/2: loadTheme --
+
+#1 hello.ts:2-4
+symbol: [function] loadTheme
+  2: function loadTheme(): string {
+  3:   return "dark";
+  4: }
+
+-- query 2/2: restore user theme at startup --
+
+#1 hello.ts:2-4
+symbol: [function] loadTheme
+  2: function loadTheme(): string {
+  3:   return "dark";
+  4: }

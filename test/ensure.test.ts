@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import { createZg } from "../src/zg.ts";
 import type { Runner } from "../src/zg.ts";
-// getOrCreateZg + resetZgCache exported from src/zg.ts. F2: parallel
+// getOrCreateZg + resetZgCache exported from src/index.ts. F2: parallel
 // tool calls on the same root must share one ensure-chain instance
 // (installP / buildP / failedRoots), so makeRunner+createZg per
 // execute doesn't break the memoized-error / lock guarantees.
@@ -17,23 +17,21 @@ const fakeRunner = (
     // Default: probeStatus returns ready without recording into `calls` so
     // the "ready index" test sees zero calls when no override is supplied.
     calls,
-    install: (): void => {
+    install: (): Promise<void> => {
       calls.push(["<install>"]);
+      return Promise.resolve();
     },
-    probe: (): string | null => "/usr/bin/zg",
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 0, stderr: "", stdout: "" }),
+    probe: (): Promise<string | null> => Promise.resolve("/usr/bin/zg"),
+    probeStatus: () => Promise.resolve({ code: 0, stderr: "", stdout: "" }),
     run: (
       args: string[]
     ): Promise<{ code: number; stderr: string; stdout: string }> => {
       calls.push(args);
       return Promise.resolve({ code: 0, stderr: "", stdout: "" });
     },
-    startServer: (): void => {
-      calls.push(["server", "on"]);
+    startServer: (): Promise<void> => {
+      calls.push(["--server", "on"]);
+      return Promise.resolve();
     },
     stream: (
       args: string[],
@@ -43,7 +41,7 @@ const fakeRunner = (
       return Promise.resolve({ code: 0 });
     },
     ...over,
-  } as Runner & { calls: string[][] };
+  };
 };
 
 test("ready index: no index command runs", async () => {
@@ -55,16 +53,13 @@ test("ready index: no index command runs", async () => {
 
 test("cold index builds once under parallel calls, then starts daemon once", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { root: "/x" });
   await Promise.all([zg.ensureIndex(), zg.ensureIndex(), zg.ensureIndex()]);
-  const builds = r.calls.filter((c) => c[0] === "index");
-  const servers = r.calls.filter((c) => c[0] === "server");
+  const builds = r.calls.filter((c) => c[0] === "--index");
+  const servers = r.calls.filter((c) => c[0] === "--server");
   assert.equal(
     builds.length,
     1,
@@ -75,11 +70,8 @@ test("cold index builds once under parallel calls, then starts daemon once", asy
 
 test("rider during in-flight build gets {} on success (no spurious memo)", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { root: "/x" });
   const [r1, r2] = await Promise.all([zg.ensureIndex(), zg.ensureIndex()]);
@@ -88,7 +80,7 @@ test("rider during in-flight build gets {} on success (no spurious memo)", async
   assert.deepEqual(r1, {});
   assert.deepEqual(r2, {});
   assert.equal(
-    r.calls.filter((c) => c[0] === "index").length,
+    r.calls.filter((c) => c[0] === "--index").length,
     1,
     "shared build still runs exactly once"
   );
@@ -97,11 +89,7 @@ test("rider during in-flight build gets {} on success (no spurious memo)", async
 test("failed build memo: second ensure surfaces status text instead of rebuilding", async () => {
   let n = 0;
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> =>
+    probeStatus: () =>
       Promise.resolve({
         code: 1,
         stderr: "",
@@ -111,7 +99,7 @@ test("failed build memo: second ensure surfaces status text instead of rebuildin
     // stream with onUpdate + signal + cwd). Make it fail so the session-scoped
     // memo engages.
     stream: (args: string[]): Promise<{ code: number }> => {
-      if (args[0] === "index") {
+      if (args[0] === "--index") {
         n += 1;
         return Promise.resolve({ code: 1 });
       }
@@ -153,49 +141,42 @@ test("PI_ZG_BIN set but probe fails -> error naming the var, no install", async 
   await assert.rejects(zg.ensureBinary(), /PI_ZG_BIN/u);
 });
 
-test("ensureBinary returns warning for zg <0.2 and none for >=0.2", async () => {
-  const oldR = fakeRunner({
-    run: (
-      args: string[]
-    ): Promise<{ code: number; stderr: string; stdout: string }> => {
-      if (args[0] === "--version") {
-        return Promise.resolve({ code: 0, stderr: "", stdout: "zg 0.1.9\n" });
-      }
-      return Promise.resolve({ code: 0, stderr: "", stdout: "" });
+test("failed probe surfaces the runner's diagnosis (which binary, which version)", async () => {
+  // The version gate lives in the runner's probe: an old zg on PATH or in
+  // PI_ZG_BIN is skipped there, and probeIssue() names it. ensureBinary has to
+  // carry that detail into the error, otherwise the user only sees "not
+  // installed" while a working 0.2.x binary sits on their PATH.
+  const r = fakeRunner({
+    install: (): never => {
+      throw new Error("should not install");
     },
+    probe: (): Promise<string | null> => Promise.resolve(null),
+    probeIssue: (): string =>
+      "/usr/bin/zg (0.2.1 — zg 0.3.0 or newer is required)",
   });
-  const oldRes = await createZg(oldR, { root: "/x" }).ensureBinary();
-  assert.equal(oldRes.bin, "/usr/bin/zg");
-  assert.match(String(oldRes.warning ?? ""), /0\.1\.9/u);
-
-  const newR = fakeRunner({
-    run: (
-      args: string[]
-    ): Promise<{ code: number; stderr: string; stdout: string }> => {
-      if (args[0] === "--version") {
-        return Promise.resolve({ code: 0, stderr: "", stdout: "zg 0.2.1\n" });
-      }
-      return Promise.resolve({ code: 0, stderr: "", stdout: "" });
-    },
+  const zg = createZg(r, { env: { PI_ZG_AUTO_INSTALL: "1" }, root: "/x" });
+  await assert.rejects(zg.ensureBinary(), (error: Error) => {
+    assert.match(error.message, /0\.2\.1/u);
+    assert.match(error.message, /\/usr\/bin\/zg/u);
+    return true;
   });
-  const newRes = await createZg(newR, { root: "/x" }).ensureBinary();
-  assert.equal(newRes.bin, "/usr/bin/zg");
-  assert.equal(newRes.warning, undefined);
 });
 
-test("version-check rejects: ensureBinary resolves with { bin, warning: undefined }", async () => {
-  // Contract pin: a Runner whose `run` rejects (timeout, spawn ENOENT,
-  // parse miss) must still let ensureBinary resolve with the probed bin.
-  // probeAndVersion wraps runner.run(["--version"]) in try/catch and returns
-  // { bin } on failure — the version probe is warn-only and must never
-  // block use of the binary. (src/zg.ts: probeAndVersion)
+test("ensureBinary does not re-spawn --version after a successful probe", async () => {
+  // probe() already paid for `zg --version`; the ensure chain must not repeat
+  // it (and must not run a 0.3.0 `--version` against anything else).
   const r = fakeRunner({
-    run: (): Promise<{ code: number; stderr: string; stdout: string }> =>
-      Promise.reject(new Error("timeout")),
+    // Simulates the makeRunner closure cache populated by probe's stdout drain.
+    version: (): string => "0.3.0",
   });
-  const res = await createZg(r, { root: "/x" }).ensureBinary();
-  assert.equal(res.bin, "/usr/bin/zg");
-  assert.equal(res.warning, undefined);
+  // Void: the resolved path lives in the runner (probedBin/version()), so no
+  // caller reads a return value any more.
+  assert.equal(await createZg(r, { root: "/x" }).ensureBinary(), undefined);
+  assert.equal(
+    r.calls.filter((c) => c[0] === "--version").length,
+    0,
+    `expected no --version spawn; got calls=${JSON.stringify(r.calls)}`
+  );
 });
 
 test("failed build surfaces last progress lines from onUpdate tail", async () => {
@@ -211,7 +192,7 @@ test("failed build surfaces last progress lines from onUpdate tail", async () =>
       args: string[],
       o?: { onUpdate?: (s: string) => void }
     ): Promise<{ code: number }> => {
-      if (args[0] === "index") {
+      if (args[0] === "--index") {
         o?.onUpdate?.("progress line 1");
         o?.onUpdate?.("progress line 2");
         o?.onUpdate?.("model download failed: network unreachable");
@@ -255,27 +236,6 @@ test("install runs but zg still missing afterwards => still not on PATH error", 
   await assert.rejects(zg.ensureBinary(), /still not on PATH/u);
 });
 
-// F7: when runner exposes a `version()` cache, probeAndVersion uses
-// it and skips the redundant `zg --version` spawn. The fakeRunner
-// counts --version calls into the shared `calls` array; with the
-// cache in play, --version never appears in calls after probe().
-test("probeAndVersion uses cached version line; no second --version spawn", async () => {
-  const r = fakeRunner({
-    // version() simulates the makeRunner closure cache populated by
-    // probe's stdout drain.
-    version: (): string | undefined => "zg 0.2.1",
-  });
-  const res = await createZg(r, { root: "/x" }).ensureBinary();
-  assert.equal(res.bin, "/usr/bin/zg");
-  assert.equal(res.warning, undefined, "0.2.1 is not pre-1.0");
-  const versionCalls = r.calls.filter((c) => c[0] === "--version");
-  assert.equal(
-    versionCalls.length,
-    0,
-    `expected no --version spawn when cache is populated; got calls=${JSON.stringify(r.calls)}`
-  );
-});
-
 test("riders joining a failing build both get {error} and exactly one build runs", async () => {
   let builds = 0;
   const r = fakeRunner({
@@ -285,7 +245,7 @@ test("riders joining a failing build both get {error} and exactly one build runs
       stdout: string;
     }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
     stream: (args: string[]): Promise<{ code: number }> => {
-      if (args[0] === "index") {
+      if (args[0] === "--index") {
         builds += 1;
         return Promise.resolve({ code: 1 });
       }
@@ -355,6 +315,66 @@ test("getOrCreateZg returns the same ensure chain for the same cwd", async () =>
   assert.ok(probeCalls >= 2, "probe runs each call (cheap, no caching needed)");
 });
 
+// A bare workspace answers `--status --check-ready` with exit 1 and
+// `  Coverage    Unavailable (index not configured)` (zsrc crates/zg/tests/
+// implicit_index.rs:290). That build has to name an embedding model: a bare
+// `--index` leaves nothing to resolve and the next non-interactive query is
+// refused with [ZG.ENGINE.NOT_FOUND] (crates/zg/src/main.rs:620-625) instead of
+// returning hits.
+const notReadyStatus =
+  (note: string) =>
+  (): Promise<{ code: number; stderr: string; stdout: string }> =>
+    Promise.resolve({
+      code: 1,
+      stderr: "Error: workspace index is not ready\n",
+      stdout: `  Coverage    Unavailable (${note})\n`,
+    });
+
+test("first index names the default model; PI_ZG_EMBEDDING overrides it", async () => {
+  // 0.3.0 argv: `--index [root] --embedding <model>` — the root is always
+  // explicit so a build can never be redirected to an ancestor's workspace.
+  const first = fakeRunner({
+    probeStatus: notReadyStatus("index not configured"),
+  });
+  await createZg(first, { env: {}, root: "/x" }).ensureIndex();
+  assert.deepEqual(
+    first.calls.filter((c) => c[0] === "--index"),
+    [["--index", "--embedding", "local/potion-code-16m-v2", "/x"]]
+  );
+
+  const viaEnv = fakeRunner({
+    probeStatus: notReadyStatus("index not created"),
+  });
+  await createZg(viaEnv, {
+    env: { PI_ZG_EMBEDDING: "local/pi-choice" },
+    root: "/x",
+  }).ensureIndex();
+  assert.deepEqual(
+    viaEnv.calls.filter((c) => c[0] === "--index"),
+    [["--index", "--embedding", "local/pi-choice", "/x"]]
+  );
+});
+
+test("stale and rebuild-required indexes refresh without --embedding", async () => {
+  const cases: [string, string[]][] = [
+    ["needs update", ["--index", "/x"]],
+    ["rebuild required", ["--index", "/x", "--rebuild"]],
+  ];
+  const runners = cases.map(([note]) =>
+    fakeRunner({ probeStatus: notReadyStatus(note) })
+  );
+  await Promise.all(
+    runners.map((r) => createZg(r, { env: {}, root: "/x" }).ensureIndex())
+  );
+  for (const [i, [note, expected]] of cases.entries()) {
+    assert.deepEqual(
+      runners[i].calls.filter((c) => c[0] === "--index"),
+      [expected],
+      note
+    );
+  }
+});
+
 test("getOrCreateZg returns distinct chains for distinct cwds", async () => {
   const { getOrCreateZg, resetZgCache } = await import("../src/index.ts");
   resetZgCache();
@@ -392,9 +412,9 @@ test("ready status from a parent folder's index across a repo boundary still bui
   const res = await zg.ensureIndex();
   assert.deepEqual(res, {});
   assert.deepEqual(
-    r.calls.filter((c) => c[0] === "index"),
-    [["index", repoDir, "--mode", "direct"]],
-    "build must name the repo root and bypass the daemon, which redirects it to the parent"
+    r.calls.filter((c) => c[0] === "--index"),
+    [["--index", repoDir, "--mode", "direct"]],
+    "build must name the repo root explicitly (zg resolves a child query to the parent index)"
   );
 });
 
@@ -419,8 +439,8 @@ test("cold build always passes an explicit root", async () => {
   const zg = createZg(r, { exists: () => false, root: repoDir });
   await zg.ensureIndex();
   assert.deepEqual(
-    r.calls.filter((c) => c[0] === "index"),
-    [["index", repoDir]]
+    r.calls.filter((c) => c[0] === "--index"),
+    [["--index", repoDir]]
   );
 });
 

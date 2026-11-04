@@ -97,6 +97,27 @@ test("prepareArguments: null/empty optionals are dropped, pattern/q alias query"
   });
 });
 
+test("prepareArguments: boolean refresh maps true to wait, false is dropped", () => {
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: true }), {
+    query: "x",
+    refresh: "wait",
+  });
+  // false means the "auto" default, so the key goes away entirely.
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: false }), {
+    query: "x",
+  });
+});
+
+test('prepareArguments: string refresh "TRUE" is a boolean flag too', () => {
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: "TRUE" }), {
+    query: "x",
+    refresh: "wait",
+  });
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: " False " }), {
+    query: "x",
+  });
+});
+
 test("prepareArguments: non-objects pass through untouched", () => {
   assert.equal(prepareZgArguments(null), null);
   assert.equal(prepareZgArguments("x"), "x");

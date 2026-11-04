@@ -69,8 +69,10 @@ const OPTIONAL_KEYS = new Set([
 // Repairs the argument shapes models commonly send, so they pass schema
 // validation instead of costing a retry: numeric strings for `limit`, limits
 // outside 1..50, mode synonyms ("semantic", "grep") and casing, `null` or ""
-// for omitted optionals, and `pattern`/`q` in place of `query`. Anything it
-// does not recognize passes through for the schema to reject.
+// for omitted optionals, `pattern`/`q` in place of `query`, and a boolean
+// `refresh` — models send it as a flag, so `true` becomes "wait" and `false`
+// is dropped for the "auto" default. Anything it does not recognize passes
+// through for the schema to reject.
 export const prepareZgArguments = (args: unknown): unknown => {
   if (typeof args !== "object" || args === null || Array.isArray(args)) {
     return args;
@@ -105,6 +107,13 @@ export const prepareZgArguments = (args: unknown): unknown => {
     if (typeof v === "string") {
       a[key] = v.trim().toLowerCase();
     }
+  }
+  // `refresh` is "auto" | "wait", but models reach for a boolean flag. Read
+  // after the lowercasing above, so "TRUE" arrives here as "true".
+  if (a.refresh === true || a.refresh === "true") {
+    a.refresh = "wait";
+  } else if (a.refresh === false || a.refresh === "false") {
+    delete a.refresh;
   }
   return a;
 };

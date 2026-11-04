@@ -134,6 +134,35 @@ test("runner.version() is undefined when probe fails (no cache poisoning)", asyn
 // (src/index.ts:502-505) says every later spawn reuses it — so a second
 // probe() must not pay another `--version` spawn. The fake binary appends one
 // line to its own `.log` per invocation, so the line count is the spawn count.
+// The tool path builds a per-call runner (it owns that call's abort signal) and
+// seeds it with the binary the shared chain's probe accepted. A fresh runner
+// that fell back to resolveBin() would skip the version gate and hand 0.3.0
+// flags to whichever candidate the preference order names first — e.g. a
+// packaged engine older than the floor while PATH has a newer one.
+test("a seeded runner executes the accepted binary, not resolveBin()", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/pi-zg-seeded-`);
+  const fake = path.join(dir, "zg");
+  writeFileSync(fake, '#!/bin/sh\necho seeded >> "$0.log"\nexit 0\n');
+  chmodSync(fake, 0o755);
+  try {
+    const runner = makeRunner({
+      bin: fake,
+      cwd: process.cwd(),
+      env: {},
+      resolveEngine: () => ({
+        cli: path.join(dir, "never-runs"),
+        problems: [],
+      }),
+    });
+    assert.equal(runner.binary?.(), fake);
+    const res = await runner.run(["--hybrid", "parse stdout"]);
+    assert.equal(res.code, 0);
+    assert.match(readFileSync(`${fake}.log`, "utf-8"), /seeded/u);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
+});
+
 test("probe() short-circuits on the cached binary (one --version spawn)", async () => {
   const dir = mkdtempSync(`${tmpdir()}/pi-zg-probe-cache-`);
   const fake = path.join(dir, "zg");

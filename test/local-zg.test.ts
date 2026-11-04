@@ -113,6 +113,25 @@ test("resolveLocalEngine verifies and returns the platform payload", () =>
     assert.deepEqual(resolveLocalEngine(dir), { cli, problems: [] });
   }));
 
+// An archive can lose some exec bits, not only the owner's. The resolver has to
+// notice any of the three (owner, group, other) and fix the mode, otherwise a
+// 0o645 payload is returned unexecutable and every spawn fails with EACCES.
+test(
+  "resolveLocalEngine restores a payload whose owner exec bit is missing",
+  { skip: process.platform === "win32" },
+  () =>
+    withTempDir((dir) => {
+      const cli = installFakeEngine(dir, "0.3.0");
+      chmodSync(cli, 0o644);
+      assert.deepEqual(resolveLocalEngine(dir), { cli, problems: [] });
+      assert.equal(
+        statSync(cli).mode % 0o1000,
+        0o755,
+        "a payload with no owner exec bit must be chmodded to 0o755"
+      );
+    })
+);
+
 test("resolveLocalEngine reports the stub and returns null without a platform package", () =>
   withTempDir((dir) => {
     const metaDir = path.join(dir, "node_modules", "@zvec", "zvec-grep");

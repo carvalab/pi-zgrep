@@ -169,10 +169,14 @@ const isNativeExecutable = (file: string): boolean => {
 };
 
 const ensureExecutable = (file: string, mode: number): void => {
-  // Any execute bit set? (Bitwise operators are lint-banned, so mask by
-  // division: the exec bits are bits 6-8, i.e. mode / 0o100 mod 8.)
-  const execBits = Math.floor(mode / 0o100) % 8;
-  if (process.platform === "win32" || execBits !== 0) {
+  // Is the binary executable by its owner — the user who spawns it? That is the
+  // low bit of the owner digit. The earlier test compared the whole owner digit
+  // against zero, so a 0o644 payload (owner `rw-`: the ordinary archive that
+  // lost its exec bit) counted as executable and was never fixed; spawn then
+  // failed with EACCES and the engine silently fell back to PATH. Bitwise
+  // operators are lint-banned, so the digit is isolated by division.
+  const ownerDigit = Math.floor(mode / 0o100) % 8;
+  if (process.platform === "win32" || ownerDigit % 2 !== 0) {
     return;
   }
   // Some archives lose the exec bit; the package dir is ours to fix.
@@ -507,6 +511,10 @@ const wireAbortKill = (
 // --- Real Runner ------------------------------------------------------------
 
 interface MakeRunnerOpts {
+  // Binary probe() already accepted (the shared ensure-chain's winner). Seeded
+  // into probedBin so this runner never falls back to resolveBin(), which knows
+  // nothing about the 0.3.0 version gate.
+  bin?: string;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   onUpdate?: (s: string) => void;
@@ -519,7 +527,9 @@ interface MakeRunnerOpts {
 }
 
 export const makeRunner = (opts: MakeRunnerOpts): Runner => {
-  let probedBin: string | undefined;
+  // A seeded binary counts as probed: probe() short-circuits on it and every
+  // spawn uses it, exactly as if this runner had run `--version` itself.
+  let probedBin: string | undefined = opts.bin;
   // F7: closure-scoped version cache populated by probe. createZg's
   // probeAndVersion uses runner.version?.() to skip the redundant
   // `--version` spawn (probe already paid for it).
@@ -817,6 +827,7 @@ export const makeRunner = (opts: MakeRunnerOpts): Runner => {
   };
 
   return {
+    binary: (): string | undefined => probedBin,
     install,
     probe,
     probeIssue: issue,
@@ -1305,8 +1316,6 @@ export const registerZgTool = (pi: ExtensionAPI): void => {
         onUpdate: progress,
       });
       const { zg } = chain;
-      // The ensure-chain is shared; query cancellation belongs to this call.
-      const runner = makeRunner({ cwd: ctx.cwd, env: process.env, signal });
 
       const input = {
         glob: params.glob,
@@ -1352,6 +1361,17 @@ export const registerZgTool = (pi: ExtensionAPI): void => {
         }
       }
 
+      // The shared chain owns the install/build locks; the query keeps this
+      // call's cancellation, so its runner is per-call — seeded with the binary
+      // the chain's probe accepted, because a fresh runner resolves by
+      // preference order alone (resolveBin) and would execute a candidate the
+      // 0.3.0 version gate had just rejected.
+      const runner = makeRunner({
+        bin: chain.runner.binary?.(),
+        cwd: ctx.cwd,
+        env: process.env,
+        signal,
+      });
       const res = await runner.run(buildQueryArgs(input));
       if (res.code !== 0) {
         return errorResult(

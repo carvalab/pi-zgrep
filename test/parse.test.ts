@@ -119,6 +119,20 @@ test("status parser: not-ready fixture forwards the upstream readiness note", ()
   assert.equal(r.freshness, "rebuild required");
 });
 
+test("status parser: pending edits (needs update) keep the note, not a rebuild", () => {
+  // Captured from `zg 0.3.0 --status` on an indexed repo with one changed file.
+  // The exit code is nonzero but the index still answers queries, so the note
+  // has to survive as-is: the caller decides what "usable" means, not the
+  // parser.
+  const r = parseStatusOutput(fixture("status-stale.txt"));
+  assert.equal("raw" in r, false);
+  if ("raw" in r) {
+    throw new Error("expected parsed");
+  }
+  assert.equal(r.ready, false);
+  assert.equal(r.freshness, "needs update");
+});
+
 test("status parser returns raw for input it cannot recognize", () => {
   const miss = parseStatusOutput("??");
   assert.equal("raw" in miss, true);

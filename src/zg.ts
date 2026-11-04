@@ -6,11 +6,19 @@ import {
   buildIndexArgs,
   buildStatusArgs,
   isNewIndexState,
+  isUsableStaleIndex,
   nonEmpty,
 } from "./args.ts";
 import { parseStatusOutput } from "./parse.ts";
 import { isUnsafeAutoIndexRoot, planWorkspace } from "./workspace.ts";
 import type { WorkspacePlan } from "./workspace.ts";
+
+// A build the caller cancelled (session reload/shutdown, Esc on a tool call).
+// Not a failed index: the child died on purpose, the index on disk is intact,
+// and the next call may try again.
+export class BuildAbortedError extends Error {
+  override name = "BuildAbortedError";
+}
 
 export interface RunResult {
   code: number;
@@ -182,30 +190,37 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     const TAIL_MAX = 10;
     const tail: string[] = [];
     const userOnUpdate = hooks.onUpdate ?? opts.onUpdate;
-    const wrappedOnUpdate = userOnUpdate
-      ? (s: string): void => {
-          tail.push(s);
-          if (tail.length > TAIL_MAX) {
-            tail.shift();
-          }
-          userOnUpdate(s);
-        }
-      : undefined;
+    // The tail is collected even with no progress sink: a caller that shows no
+    // progress (session warmup) still has to report *why* a build failed.
+    const wrappedOnUpdate = (s: string): void => {
+      tail.push(s);
+      if (tail.length > TAIL_MAX) {
+        tail.shift();
+      }
+      userOnUpdate?.(s);
+    };
     // `newIndex` names the embedding model for a workspace that has no index
     // yet; refreshes and --rebuild keep the model the index already stores.
     // See buildIndexArgs in args.ts.
     const extra = rebuild ? [...buildArgs, "--rebuild"] : buildArgs;
-    const res = await runner.stream(
-      buildIndexArgs(extra, {
-        env: opts.env,
-        newIndex: !rebuild && newIndex,
-      }),
-      {
-        cwd: opts.root,
-        onUpdate: wrappedOnUpdate,
-        signal: hooks.signal ?? opts.signal,
-      }
-    );
+    const signal = hooks.signal ?? opts.signal;
+    let res: { code: number };
+    try {
+      res = await runner.stream(
+        buildIndexArgs(extra, {
+          env: opts.env,
+          newIndex: !rebuild && newIndex,
+        }),
+        { cwd: opts.root, onUpdate: wrappedOnUpdate, signal }
+      );
+    } catch (error) {
+      // runner.stream throws when the signal dies (it kills the child first),
+      // so a cancellation arrives as an abort, not as an exit code.
+      throw signal?.aborted === true ? new BuildAbortedError() : error;
+    }
+    if (signal?.aborted === true) {
+      throw new BuildAbortedError();
+    }
     if (res.code !== 0) {
       const tailText =
         tail.length > 0 ? `\nLast output:\n${tail.join("\n")}` : "";
@@ -248,6 +263,20 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     if (st.code === 0 && plan.trustStatus) {
       return {};
     }
+    const status = parseStatusOutput(st.stdout);
+    const freshness = "raw" in status ? undefined : status.freshness;
+    // A usable-but-stale index is served as-is. zg 0.3.0 answers every indexed
+    // query from it and stamps each hit `status: possibly_stale` (the parser
+    // turns that into `stale: true`), so a build here would block the first
+    // query — and put a full refresh on session start — for nothing. The daemon
+    // refreshes in the background; `refresh=wait` forces it for one query, and
+    // /zg-index remains the explicit rebuild. Never across a repo boundary:
+    // there the stale note may describe a parent folder's index, which is not
+    // this repo's index at all.
+    if (isUsableStaleIndex(freshness) && plan.trustStatus) {
+      startServerOnce();
+      return {};
+    }
     // F1: a concurrent call already started a build for this session — just
     // wait for it. Adding the root to failedRoots here would mark the
     // in-flight build as already-failed and surface a spurious memo to the
@@ -256,7 +285,11 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
       try {
         await buildP;
       } catch (error) {
-        return { error: (error as Error).message };
+        // A build cancelled by its owner (reload, Esc) leaves nothing behind
+        // to report: the next call may simply build again.
+        return error instanceof BuildAbortedError
+          ? {}
+          : { error: (error as Error).message };
       }
       return {};
     }
@@ -277,8 +310,6 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     // An index from a pre-0.3.0 zg is unreadable by 0.3.0: `--status` reports
     // "rebuild required" in the Coverage note and both `--index` and every
     // indexed query refuse until it is rebuilt.
-    const status = parseStatusOutput(st.stdout);
-    const freshness = "raw" in status ? undefined : status.freshness;
     const needsRebuild = freshness === "rebuild required";
     // No index at all (fresh workspace, no configured model): the build must be
     // told which model to use, otherwise a bare `--index` has nothing to
@@ -294,7 +325,12 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
         await runBuild(boundaryBuildArgs(plan), needsRebuild, newIndex, hooks);
         startServerOnce();
       } catch (error) {
-        failedRoots.add(opts.root);
+        // A cancelled build is not a failed index: memoizing it would make every
+        // later call this session report "previous build attempt failed" and
+        // never index again.
+        if (!(error instanceof BuildAbortedError)) {
+          failedRoots.add(opts.root);
+        }
         throw error;
       } finally {
         buildP = undefined;
@@ -304,7 +340,9 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     try {
       await buildP;
     } catch (error) {
-      return { error: (error as Error).message };
+      return error instanceof BuildAbortedError
+        ? {}
+        : { error: (error as Error).message };
     }
     return {};
   };

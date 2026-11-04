@@ -158,6 +158,17 @@ export const resolveNewIndexEmbedding = (
 export const isNewIndexState = (freshness?: string): boolean =>
   freshness === "index not created" || freshness === "index not configured";
 
+// Coverage notes that describe an index which is queryable *right now* even
+// though `--check-ready` exited nonzero. zg 0.3.0 writes "needs update" when
+// files are pending a refresh — captured on a 4-file repo with 2 pending edits:
+//   Coverage    ██████████░░░░░░░░░░  50%  2 / 4 files (needs update)   exit 1
+// — and then answers every indexed query from that index, stamping each hit
+// `status: possibly_stale` (test/fixtures/status-stale.txt). So the caller can
+// serve it and let the daemon (or `--refresh wait`) catch up, instead of
+// blocking the first query on a rebuild.
+export const isUsableStaleIndex = (freshness?: string): boolean =>
+  freshness === "needs update";
+
 const namesEmbedding = (args: string[]): boolean =>
   args.some((a) => a === "--embedding" || a.startsWith("--embedding="));
 

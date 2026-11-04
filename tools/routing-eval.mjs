@@ -7,9 +7,14 @@
 // this package's extension and skill loaded; the session .jsonl is then read
 // for the first search-like tool call, which is what "routing" means here.
 //
-// A run needs a real provider. With OPENROUTER_API_KEY (from ../.env or the
-// environment) the reference condition is `--model openrouter/free`; any other
-// configured provider works the same way via --model provider/id.
+// The gate judges only the sessions that searched at all: a model that answers
+// a concept question from memory never reached the choice, so it leaves the
+// denominator (its share is the no-tool rate, reported and not gated) instead of
+// scoring as a routing failure. Too few searchers to judge is INCONCLUSIVE.
+//
+// A run needs a real provider: with OPENROUTER_API_KEY (from ../.env or the
+// environment) an `openrouter/*` model works, and any provider already logged
+// in works the same way via --model provider/id plus --agent-from.
 //
 // Workspace: a shallow clone of expressjs/express in $ZG_BENCH (default
 // ~/.cache/zg-bench), pre-indexed by the bundled zg 0.3.0 with
@@ -524,12 +529,22 @@ await Promise.all(
 
 const categories = [...new Set(pick().map((p) => p.category))];
 const categoryOf = (id) => pick().find((p) => p.id === id)?.category;
+// A row with `kind: null` never made a search-like call: `rate` drops it from
+// both numerator and denominator, `noToolRate` counts it.
 const rate = (rows) => {
+  const searchers = rows.filter((r) => r.kind !== null);
+  if (searchers.length === 0) {
+    return "n/a";
+  }
+  const zgFirst = searchers.filter((r) => r.kind === "zg").length;
+  return `${((zgFirst / searchers.length) * 100).toFixed(0)}% (${zgFirst}/${searchers.length})`;
+};
+const noToolRate = (rows) => {
   if (rows.length === 0) {
     return "n/a";
   }
-  const zgFirst = rows.filter((r) => r.kind === "zg").length;
-  return `${((zgFirst / rows.length) * 100).toFixed(0)}% (${zgFirst}/${rows.length})`;
+  const none = rows.filter((r) => r.kind === null).length;
+  return `${((none / rows.length) * 100).toFixed(0)}% (${none}/${rows.length})`;
 };
 const rowsFor = (model, condition, category) =>
   results.filter(
@@ -540,14 +555,20 @@ const rowsFor = (model, condition, category) =>
   );
 
 for (const model of opts.models) {
-  console.log(`\n${model} — first search-like tool, by category`);
+  console.log(
+    `\n${model} — zg-first among the sessions that searched, plus the no-tool share`
+  );
   const table = [];
   for (const category of [...categories, "all"]) {
     const row = { category };
     for (const condition of conditions) {
-      row[condition] = rate(
-        rowsFor(model, condition, category === "all" ? undefined : category)
+      const rows = rowsFor(
+        model,
+        condition,
+        category === "all" ? undefined : category
       );
+      row[condition] = rate(rows);
+      row[`${condition} no-tool`] = noToolRate(rows);
     }
     table.push(row);
   }
@@ -588,9 +609,10 @@ console.log(`session transcripts kept in ${scratch}`);
 // Two exit behaviours, mirroring the pi integration job: a threshold breach or
 // a session that failed inside this extension is a real failure (1). A provider
 // that rate-limits, times out or 5xxs produces no routing observation at all, so
-// those rows leave the denominator, and an empty denominator is INCONCLUSIVE
-// (0, reason in the step summary) rather than a red build. Without --threshold
-// this block only reports and the script exits as it always did.
+// those rows leave the denominator; so does a session that never searched (the
+// no-tool rate, reported but not gated). Fewer than MIN_SEARCHERS searchers, or
+// none at all, is INCONCLUSIVE (0, reason in the step summary), not a red build.
+// Without --threshold this block only reports and the script exits as it did.
 const OUR_CODE = /(?:pi-zgrep|src[/\\]index\.ts|skills[/\\])/u;
 
 const unusableReason = (row) => {
@@ -608,19 +630,28 @@ const providerFlakes = results.filter(
   (row) => unusableReason(row) === "provider"
 );
 
-// The gate: `concept` whenever the subset contains it, on the shipped
-// `guidance` condition when both conditions ran.
+// The gate: concept + holdout — the prompts where a search is expected — on the
+// shipped `guidance` condition when both conditions ran. A subset with neither
+// (say `--subset exact`) gates on whatever it selected.
 const gateCondition = conditions.includes("guidance")
   ? "guidance"
   : conditions[0];
-const gateCategory = categories.includes("concept") ? "concept" : null;
+const GATE_CATEGORIES = ["concept", "holdout"];
+const gateCategories = GATE_CATEGORIES.filter((c) => categories.includes(c));
+const gateSet = gateCategories.length > 0 ? gateCategories : categories;
 const gateRows = validRows.filter(
   (row) =>
-    row.condition === gateCondition &&
-    (gateCategory === null || categoryOf(row.prompt) === gateCategory)
+    row.condition === gateCondition && gateSet.includes(categoryOf(row.prompt))
 );
-const zgFirst = gateRows.filter((row) => row.kind === "zg").length;
-const pct = gateRows.length === 0 ? null : (zgFirst / gateRows.length) * 100;
+// Only sessions that made a search-like call are judged: picking grep, find or
+// read over zg is a routing failure; answering from memory never saw the choice.
+const searchers = gateRows.filter((row) => row.kind !== null);
+const zgFirst = searchers.filter((row) => row.kind === "zg").length;
+const noTool = gateRows.length - searchers.length;
+const pct = searchers.length === 0 ? null : (zgFirst / searchers.length) * 100;
+// Two searchers that both chose zg are not 100% of anything: under this many the
+// share is noise, so the gate reports INCONCLUSIVE rather than pass or fail.
+const MIN_SEARCHERS = 4;
 const threshold = opts.threshold;
 
 const decide = () => {
@@ -646,38 +677,36 @@ const decide = () => {
       reason: `${extensionFailures.length} session(s) failed inside the extension: ${(first.stderr ?? "no stderr").slice(-300)}`,
     };
   }
-  if (pct === null) {
+  const noToolNote = `${noTool}/${gateRows.length} session(s) answered without a search tool`;
+  if (searchers.length < MIN_SEARCHERS) {
+    const flakes =
+      providerFlakes.length > 0
+        ? `, ${providerFlakes.length} provider flake(s)`
+        : "";
     return {
       code: 0,
       kind: "INCONCLUSIVE",
-      reason: `no usable session (${providerFlakes.length} provider flake(s))`,
+      reason: `only ${searchers.length} searching session(s) of ${gateRows.length}, need ${MIN_SEARCHERS} to score routing: ${noToolNote}${flakes}`,
     };
   }
-  const label = `${gateCategory ?? "all"} zg-first ${pct.toFixed(0)}% (${zgFirst}/${gateRows.length})`;
+  const label = `${gateSet.join("+")} zg-first among searchers ${pct.toFixed(0)}% (${zgFirst}/${searchers.length}), ${noToolNote}`;
   if (pct < threshold) {
     return {
       code: 1,
       kind: "FAIL",
-      reason: `${label} is below the ${threshold}% threshold`,
+      reason: `${label} — below the ${threshold}% threshold`,
     };
   }
   return {
     code: 0,
     kind: "PASS",
-    reason: `${label} meets the ${threshold}% threshold`,
+    reason: `${label} — meets the ${threshold}% threshold`,
   };
 };
 const verdict = decide();
 
-// Markdown for $GITHUB_STEP_SUMMARY. Same numbers as `console.table` above,
-// minus the rows that produced no observation.
-const mdRate = (rows) => {
-  if (rows.length === 0) {
-    return "n/a";
-  }
-  const hits = rows.filter((row) => row.kind === "zg").length;
-  return `${((hits / rows.length) * 100).toFixed(0)}% (${hits}/${rows.length})`;
-};
+// Markdown for $GITHUB_STEP_SUMMARY. Same rows as `console.table` above, minus
+// the ones that produced no observation; the rate format is `rate`'s.
 const mdRows = (condition, category) =>
   validRows.filter(
     (row) =>
@@ -692,18 +721,21 @@ const lines = [
   "",
   `\`${opts.models.join(", ")}\` · subset \`${opts.only ?? "all"}\` · ${opts.repeat} run(s) · ${conditions.join("+")}${providerFlakes.length > 0 ? ` · ${providerFlakes.length} provider flake(s) excluded` : ""}`,
   "",
-  `| category | ${conditions.join(" | ")} |`,
-  `| --- | ${conditions.map(() => "---").join(" | ")} |`,
+  `| category | ${conditions.flatMap((condition) => [`${condition} zg-first`, `${condition} no-tool`]).join(" | ")} |`,
+  `| --- | ${conditions.flatMap(() => ["---", "---"]).join(" | ")} |`,
 ];
 for (const category of [...categories, "all"]) {
-  const cells = conditions.map((condition) =>
-    mdRate(mdRows(condition, category === "all" ? null : category))
-  );
+  const cells = conditions.flatMap((condition) => {
+    const rows = mdRows(condition, category === "all" ? null : category);
+    return [rate(rows), noToolRate(rows)];
+  });
   lines.push(`| ${category} | ${cells.join(" | ")} |`);
 }
 lines.push(
   "",
-  `Threshold: ${threshold === null ? "not enforced" : `${threshold}% on ${gateCategory ?? "all"} (${gateCondition})`}`
+  `Threshold: ${threshold === null ? "not enforced" : `${threshold}% on ${gateSet.join("+")} (${gateCondition}), at least ${MIN_SEARCHERS} searching sessions`}`,
+  "",
+  "A session that answers from memory never chose a tool, so it leaves the denominator: its share is the no-tool column, reported but not gated."
 );
 
 console.log(`\nverdict: ${verdict.kind} — ${verdict.reason}`);

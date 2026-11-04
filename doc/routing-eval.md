@@ -95,8 +95,19 @@ Two layers, both in `.github/workflows/routing.yml` and both keyed on
 
 | layer | trigger | scope | gate |
 | --- | --- | --- | --- |
-| 2 — `routing` | `pull_request` touching `src/index.ts`, `skills/**`, `tools/routing-eval.mjs` or `package.json` (the pinned pi version) | `--subset concept,holdout --guidance 1 --runs 1` | `--threshold 80`: `zg`-first on `concept` must be ≥ 80% |
-| 3 — `routing-full` | weekly (Mondays 06:30 UTC) plus `workflow_dispatch` | full matrix, `--runs 3` | same threshold, JSON uploaded as `routing-eval-full`, table in the step summary |
+| 2 — `routing` | `pull_request` touching `src/index.ts`, `skills/**`, `tools/routing-eval.mjs` or `package.json` (the pinned pi version) | `--subset concept,holdout --guidance 1 --runs 2` over 10 prompts (20 sessions) | `--threshold 80`: `zg` must be the first search-like tool in ≥ 80% of the sessions that searched, and at least 4 sessions must have searched |
+| 3 — `routing-full` | weekly (Mondays 06:30 UTC) plus `workflow_dispatch` | full matrix, `--runs 3` | same threshold and same metric, JSON uploaded as `routing-eval-full`, table in the step summary |
+
+The gate scores the **first search-like tool of the sessions that searched** —
+the `zg` share of the `zg`/`grep`/`find`/`read`/`bash rg` choices — pooled over
+concept + holdout. A session that answered a concept question from memory never
+made a tool choice: it lands in the no-tool column next to the rate and is
+**not** gated. The first real layer-2 run (41881366821) shows why — the model
+answered three of six concept prompts from memory about `expressjs/express`, so
+the gate read 50% and went red, while every session that did search chose `zg`
+(6/6). A no-tool answer is not a routing decision of the extension; it says the
+model did not need the workspace. Under four searching sessions the share is
+noise, so the run is INCONCLUSIVE (exit 0) rather than pass or fail.
 
 Both pin one cheap tool-capable OpenRouter model through the
 `ROUTING_EVAL_MODEL` repository variable (default
@@ -119,16 +130,17 @@ node tools/routing-eval.mjs                       # 16 prompts x 3 runs x 2 cond
 node tools/routing-eval.mjs --runs 1 --guidance 0 # baseline only
 node tools/routing-eval.mjs --only holdout        # held-out set only
 node tools/routing-eval.mjs --json out.json       # machine-readable results for CI
-node tools/routing-eval.mjs --subset concept,holdout --guidance 1 --runs 1 --threshold 80
+node tools/routing-eval.mjs --subset concept,holdout --guidance 1 --runs 2 --threshold 80
                                                   # exactly what CI layer 2 runs
 ```
 
-`--threshold <pct>` turns the run into a gate: it scores `zg`-first on the
-`concept` category (or on every selected prompt when the subset has none) and
+`--threshold <pct>` turns the run into a gate: it scores `zg`-first on
+concept + holdout (or on every selected prompt when the subset has neither) and
 sets the exit code — 1 below the threshold, 0 at or above it, 0 with
-INCONCLUSIVE when provider errors left no usable session. Without
-`--threshold` the script only reports, as before. `--subset` is `--only` under
-a CI-friendly name.
+INCONCLUSIVE when fewer than four sessions searched or provider errors left no
+usable session. Sessions with no tool call at all are reported as the no-tool
+rate and leave the denominator. Without `--threshold` the script only reports,
+as before. `--subset` is `--only` under a CI-friendly name.
 
 `--model provider/id` pins a different model (default `zai/glm-5.3-flash`,
 needs `--agent-from ~/.pi/agent` for its credentials). With an OpenRouter key

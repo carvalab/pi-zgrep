@@ -3,14 +3,19 @@
 # Layer 2 (pull requests): when a PR touches the guidance surface — the tool
 # description and guidelines in src/index.ts, the skill text, the eval itself,
 # or the pinned pi version in package.json — run the small gated subset
-# (concept + holdout, guidance on, 1 run) and fail below the threshold.
+# (concept + holdout, guidance on, 2 runs = 20 sessions) and fail below the
+# threshold. The gate is the first search-like tool of the sessions that
+# searched: choosing grep, find or read over zg is a routing failure, a session
+# that answered from memory is reported as no-tool and is not one.
 #
 # Layer 3 (weekly + manual): the full 96-session matrix, JSON kept as an
 # artifact, table in the step summary, red only on a threshold breach.
 #
 # Both layers treat a provider error as INCONCLUSIVE (exit 0, reason in the
 # step summary), matching the pi integration job: a rate-limited model tells us
-# nothing about routing, and a build that goes red for it gets ignored.
+# nothing about routing, and a build that goes red for it gets ignored. So does
+# a gate population with fewer than four searching sessions.
+#
 # Without OPENROUTER_API_KEY (fork PRs) the job skips with a notice.
 
 name: Routing eval
@@ -98,7 +103,7 @@ jobs:
             --model "$PI_MODEL" \
             --subset concept,holdout \
             --guidance 1 \
-            --runs 1 \
+            --runs 2 \
             --concurrency 4 \
             --threshold "$ROUTING_THRESHOLD" \
             --json routing-eval.json

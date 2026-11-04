@@ -88,6 +88,30 @@ shows the snippet, so this measures the bullets, not the tool listing. A model
 that ignores tool snippets would need the `openrouter/free` class of routing
 experiment this deliberately avoids.
 
+## CI
+
+Two layers, both in `.github/workflows/routing.yml` and both keyed on
+`OPENROUTER_API_KEY`: without it (fork PRs) they skip with a notice and exit 0.
+
+| layer | trigger | scope | gate |
+| --- | --- | --- | --- |
+| 2 — `routing` | `pull_request` touching `src/index.ts`, `skills/**`, `tools/routing-eval.mjs` or `package.json` (the pinned pi version) | `--subset concept,holdout --guidance 1 --runs 1` | `--threshold 80`: `zg`-first on `concept` must be ≥ 80% |
+| 3 — `routing-full` | weekly (Mondays 06:30 UTC) plus `workflow_dispatch` | full matrix, `--runs 3` | same threshold, JSON uploaded as `routing-eval-full`, table in the step summary |
+
+Both pin one cheap tool-capable OpenRouter model through the
+`ROUTING_EVAL_MODEL` repository variable (default
+`openrouter/openai/gpt-oss-20b`) and take the threshold from
+`ROUTING_THRESHOLD` (default `80`), so the gate can be re-pointed without a
+workflow edit.
+
+Exit codes follow the pi integration job: a threshold breach or a session that
+failed inside this extension is 1; a provider that rate-limits, times out or
+5xxs produced no routing observation, so those rows leave the denominator, and
+an empty denominator is INCONCLUSIVE (0, reason in the step summary). A red run
+therefore means a routing regression, not a bad afternoon at the provider. Both
+jobs are capped at 20 (layer 2) and 45 (layer 3) minutes and share a
+`cancel-in-progress` concurrency group.
+
 ## Re-running
 
 ```sh
@@ -95,7 +119,16 @@ node tools/routing-eval.mjs                       # 16 prompts x 3 runs x 2 cond
 node tools/routing-eval.mjs --runs 1 --guidance 0 # baseline only
 node tools/routing-eval.mjs --only holdout        # held-out set only
 node tools/routing-eval.mjs --json out.json       # machine-readable results for CI
+node tools/routing-eval.mjs --subset concept,holdout --guidance 1 --runs 1 --threshold 80
+                                                  # exactly what CI layer 2 runs
 ```
+
+`--threshold <pct>` turns the run into a gate: it scores `zg`-first on the
+`concept` category (or on every selected prompt when the subset has none) and
+sets the exit code — 1 below the threshold, 0 at or above it, 0 with
+INCONCLUSIVE when provider errors left no usable session. Without
+`--threshold` the script only reports, as before. `--subset` is `--only` under
+a CI-friendly name.
 
 `--model provider/id` pins a different model (default `zai/glm-5.3-flash`,
 needs `--agent-from ~/.pi/agent` for its credentials). With an OpenRouter key

@@ -24,6 +24,7 @@
 //   node tools/routing-eval.mjs --only holdout                   # held-out set
 //   node tools/routing-eval.mjs --model zai/glm-5.3-flash --agent-from ~/.pi/agent
 //   node tools/routing-eval.mjs --json out.json                  # CI-readable result file
+//   node tools/routing-eval.mjs --subset concept,holdout --threshold 80  # CI gate
 //
 // One cheap, tool-capable model is pinned in PINNED_MODEL. Do not use
 // openrouter/free here: that alias answers with a different model per request,
@@ -148,6 +149,7 @@ const parseArgs = (argv) => {
     only: null,
     out: null,
     repeat: 3,
+    threshold: null,
     models: [],
     timeout: 240_000,
   };
@@ -162,8 +164,10 @@ const parseArgs = (argv) => {
       o.concurrency = Number(next());
     } else if (a === "--guidance") {
       o.guidance = next();
-    } else if (a === "--only") {
+    } else if (a === "--only" || a === "--subset") {
       o.only = next();
+    } else if (a === "--threshold") {
+      o.threshold = Number(next());
     } else if (a === "--json" || a === "--out") {
       o.out = next();
     } else if (a === "--env-file") {
@@ -174,7 +178,7 @@ const parseArgs = (argv) => {
       o.timeout = Number(next());
     } else if (a === "--help" || a === "-h") {
       console.log(
-        "node tools/routing-eval.mjs [--model provider/id] [--runs 3] [--guidance 1|0|both] [--only concept|exact|control|holdout|c1,e2] [--json file.json] [--env-file path] [--agent-from dir] [--concurrency 4] [--timeout ms]"
+        "node tools/routing-eval.mjs [--model provider/id] [--runs 3] [--guidance 1|0|both] [--subset concept,holdout] [--threshold 80] [--json file.json] [--env-file path] [--agent-from dir] [--concurrency 4] [--timeout ms]"
       );
       process.exit(0);
     } else {
@@ -428,13 +432,17 @@ const runOne = async ({ model, prompt, condition, repeat }) => {
 
 // --- matrix ------------------------------------------------------------------
 
-const pick = () =>
-  PROMPTS.filter((p) => {
-    if (!opts.only) {
-      return true;
-    }
-    return opts.only.split(",").includes(p.id) || opts.only === p.category;
-  });
+const pick = () => {
+  if (!opts.only) {
+    return PROMPTS;
+  }
+  // A comma list, as CI passes it (`concept,holdout`): each entry is a category
+  // name or a prompt id, so `--subset holdout` and `--subset c1,e2` both work.
+  const wanted = opts.only.split(",").map((s) => s.trim());
+  return PROMPTS.filter(
+    (p) => wanted.includes(p.id) || wanted.includes(p.category)
+  );
+};
 
 const conditions =
   opts.guidance === "both"
@@ -451,6 +459,14 @@ for (const model of opts.models) {
       }
     }
   }
+}
+if (jobs.length === 0) {
+  // A subset that matches nothing would otherwise spend a key on zero sessions
+  // and report INCONCLUSIVE, which reads like a provider flake.
+  console.error(
+    `--subset "${opts.only ?? ""}" matched no prompts; known categories: ${[...new Set(PROMPTS.map((p) => p.category))].join(", ")}, plus any prompt id`
+  );
+  process.exit(2);
 }
 console.log(
   `${jobs.length} runs: ${opts.models.length} model(s) x ${conditions.join("+")} x ${opts.repeat} repeat(s), concurrency ${opts.concurrency}`
@@ -566,3 +582,137 @@ if (failures.length > 0) {
 persist();
 console.log(`results written to ${out}`);
 console.log(`session transcripts kept in ${scratch}`);
+
+// --- verdict (CI gate) -------------------------------------------------------
+
+// Two exit behaviours, mirroring the pi integration job: a threshold breach or
+// a session that failed inside this extension is a real failure (1). A provider
+// that rate-limits, times out or 5xxs produces no routing observation at all, so
+// those rows leave the denominator, and an empty denominator is INCONCLUSIVE
+// (0, reason in the step summary) rather than a red build. Without --threshold
+// this block only reports and the script exits as it always did.
+const OUR_CODE = /(?:pi-zgrep|src[/\\]index\.ts|skills[/\\])/u;
+
+const unusableReason = (row) => {
+  if (row.exit === 0) {
+    return null;
+  }
+  return OUR_CODE.test(row.stderr ?? "") ? "extension" : "provider";
+};
+
+const validRows = results.filter((row) => unusableReason(row) === null);
+const extensionFailures = results.filter(
+  (row) => unusableReason(row) === "extension"
+);
+const providerFlakes = results.filter(
+  (row) => unusableReason(row) === "provider"
+);
+
+// The gate: `concept` whenever the subset contains it, on the shipped
+// `guidance` condition when both conditions ran.
+const gateCondition = conditions.includes("guidance")
+  ? "guidance"
+  : conditions[0];
+const gateCategory = categories.includes("concept") ? "concept" : null;
+const gateRows = validRows.filter(
+  (row) =>
+    row.condition === gateCondition &&
+    (gateCategory === null || categoryOf(row.prompt) === gateCategory)
+);
+const zgFirst = gateRows.filter((row) => row.kind === "zg").length;
+const pct = gateRows.length === 0 ? null : (zgFirst / gateRows.length) * 100;
+const threshold = opts.threshold;
+
+const decide = () => {
+  if (threshold === null) {
+    return {
+      code: 0,
+      kind: "REPORT",
+      reason: "no --threshold, reporting only",
+    };
+  }
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+    return {
+      code: 2,
+      kind: "ERROR",
+      reason: `--threshold must be 0..100 (got ${threshold})`,
+    };
+  }
+  if (extensionFailures.length > 0) {
+    const first = extensionFailures[0];
+    return {
+      code: 1,
+      kind: "FAIL",
+      reason: `${extensionFailures.length} session(s) failed inside the extension: ${(first.stderr ?? "no stderr").slice(-300)}`,
+    };
+  }
+  if (pct === null) {
+    return {
+      code: 0,
+      kind: "INCONCLUSIVE",
+      reason: `no usable session (${providerFlakes.length} provider flake(s))`,
+    };
+  }
+  const label = `${gateCategory ?? "all"} zg-first ${pct.toFixed(0)}% (${zgFirst}/${gateRows.length})`;
+  if (pct < threshold) {
+    return {
+      code: 1,
+      kind: "FAIL",
+      reason: `${label} is below the ${threshold}% threshold`,
+    };
+  }
+  return {
+    code: 0,
+    kind: "PASS",
+    reason: `${label} meets the ${threshold}% threshold`,
+  };
+};
+const verdict = decide();
+
+// Markdown for $GITHUB_STEP_SUMMARY. Same numbers as `console.table` above,
+// minus the rows that produced no observation.
+const mdRate = (rows) => {
+  if (rows.length === 0) {
+    return "n/a";
+  }
+  const hits = rows.filter((row) => row.kind === "zg").length;
+  return `${((hits / rows.length) * 100).toFixed(0)}% (${hits}/${rows.length})`;
+};
+const mdRows = (condition, category) =>
+  validRows.filter(
+    (row) =>
+      row.condition === condition &&
+      (category === null || categoryOf(row.prompt) === category)
+  );
+
+const lines = [
+  `### Routing eval — ${verdict.kind}`,
+  "",
+  verdict.reason,
+  "",
+  `\`${opts.models.join(", ")}\` · subset \`${opts.only ?? "all"}\` · ${opts.repeat} run(s) · ${conditions.join("+")}${providerFlakes.length > 0 ? ` · ${providerFlakes.length} provider flake(s) excluded` : ""}`,
+  "",
+  `| category | ${conditions.join(" | ")} |`,
+  `| --- | ${conditions.map(() => "---").join(" | ")} |`,
+];
+for (const category of [...categories, "all"]) {
+  const cells = conditions.map((condition) =>
+    mdRate(mdRows(condition, category === "all" ? null : category))
+  );
+  lines.push(`| ${category} | ${cells.join(" | ")} |`);
+}
+lines.push(
+  "",
+  `Threshold: ${threshold === null ? "not enforced" : `${threshold}% on ${gateCategory ?? "all"} (${gateCondition})`}`
+);
+
+console.log(`\nverdict: ${verdict.kind} — ${verdict.reason}`);
+if (process.env.GITHUB_STEP_SUMMARY) {
+  writeFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`, {
+    flag: "a",
+  });
+}
+// Keep the verdict in the JSON so an uploaded artifact answers "why red?".
+const artifact = JSON.parse(readFileSync(out, "utf-8"));
+writeFileSync(out, JSON.stringify({ ...artifact, verdict }, null, 2));
+process.exitCode = verdict.code;

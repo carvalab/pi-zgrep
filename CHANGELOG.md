@@ -1,8 +1,31 @@
 # Changelog
 
-All notable changes to pi-zgrep. Release sections are curated before tagging
-(user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
-the raw commit list to rewrite from.
+All notable changes to pi-zgrep. Release sections are curated before tagging (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts the raw commit list to rewrite from.
+
+## [v0.7.0] - 2026-11-03
+
+**Breaking**
+
+- Requires zg ≥ 0.3.0. zg 0.3.0 is a native Rust rewrite with an rg-style CLI, so the extension emits `zg --hybrid|--fts|--vector <query>`, `zg --rg <pattern>`, `zg --index`, `zg --status` and `zg --server on|off|status` only; the 0.2.x subcommand forms are gone. An older binary is now rejected by name instead of being handed flags it would read as search text.
+- `PI_ZG_BIN` is exclusive and self-diagnosing. When set it is the only candidate: missing, non-executable, the unmaterialized install stub, or older than 0.3.0 all produce one error naming the variable, the path and the version found — never a silent fallback to the bundled engine or PATH.
+
+**Added**
+
+- Bundled-engine resolution for the native package: read `platforms.json`, locate `@zvec/zvec-grep-<os>-<arch>[-<libc>]`, verify `bin/<binary>` against the shipped `checksums.json` (byte length plus sha256), then fall back to a materialized `bin/zg.exe` that passes an ELF/PE/Mach-O magic check. The resolver is injectable, so unit tests never reach a real `node_modules`.
+- `/zg-status` now reports every rejected candidate with its path, version and reason; `/zg-server on` replaces a leftover 0.2.x daemon in place instead of failing on the protocol mismatch.
+- Upgrade path from 0.2.x needs no user action: an unreadable legacy index shows up as `rebuild required` and is rebuilt exactly once with `--index --rebuild`, and the first session's `--server on` performs the daemon migration.
+
+**Changed**
+
+- Installs that block lifecycle scripts keep working (npm 12 / RFC 0054 defaults, `--ignore-scripts`) because the per-platform package already ships the binary; the sharp/node-gyp workaround and the retry dance are gone. Only `--omit=optional` breaks search, and the error now says to reinstall without it or set `PI_ZG_BIN`.
+- The runner spawns the native binary directly (never through `node`) and prefers the bundled engine over PATH; a PATH copy is used only when no platform package resolves.
+- The parser reads 0.3.0 output — `#1 <path>:<start>-<end>` result blocks, `No matches.` as an empty result set, and the Coverage note `Unavailable (rebuild required)` as freshness — and returns raw passthrough for any structural miss instead of fabricating fields.
+- `/zg-index` forwards a bare word only when it exists on disk (upstream kills unknown roots with `[ROOT_NOT_FOUND]`); anything else gets a usage line instead of a doomed build.
+
+**Fixed**
+
+- The install-scenario matrix — bundled engine, rejected 0.2.1, omitted optional deps — is pinned by tests, so a resolution regression fails CI instead of shipping.
+- The first index on a fresh repo no longer fails with `ZG.ENGINE.NOT_FOUND`: a build that starts from nothing passes `--embedding` explicitly, resolved from `ZVEC_GREP_EMBEDDING`, then `PI_ZG_EMBEDDING`, then the local default `local/potion-code-16m-v2`.
 
 ## [v0.6.0] - 2026-10-16
 

@@ -10,15 +10,31 @@
 //   2. the session's zg toolResult is not an error;
 //   3. that result's structured details name a hit on the fixture file.
 //
-// Needs OPENROUTER_API_KEY. The model is openrouter/free, which picks a free
-// model that supports tool calling. Skipped (exit 0) when the key is absent, so
-// a fork without the secret still passes CI — the assertions themselves are
-// then self-checked against handcrafted session entries instead.
+// Needs OPENROUTER_API_KEY. The model is pinned (see MODELS) rather than
+// openrouter/free: the router sometimes landed on a model that rejects a
+// non-reasoning request with "400: Reasoning is mandatory" before any tool call,
+// which failed this job for a reason that had nothing to do with the package.
+// Skipped (exit 0) when the key is absent, so a fork without the secret still
+// passes CI — the assertions themselves are then self-checked against
+// handcrafted session entries instead.
+//
+// A failed session is classified before it is allowed to fail the job:
+//   provider-side — HTTP 4xx/5xx from the provider, 429, a model that demands
+//   reasoning, no assistant message, or a model that never called any tool — is
+//   retried once on the backup model and, if that also fails provider-side, ends
+//   as "INCONCLUSIVE: <reason>" with exit 0 plus a line in $GITHUB_STEP_SUMMARY:
+//   the package was never exercised, so the run proves nothing either way.
+//   extension-side — a zg tool result that is an error, a result without the
+//   fixture hit, an install or version check that failed, no zg tool in the
+//   prompt — always exits 1 and is never retried.
 //
 // PI_ZG_IT_NEGATIVE=1 runs the same session with PI_ZG_BIN pointing at a path
 // that does not exist. PI_ZG_BIN is exclusive in the extension, so zg can only
 // fail: this is the negative proof that the assertions above actually check the
-// engine rather than passing on any session.
+// engine rather than passing on any session. It is extension-side, so it stays
+// red: exit 1, never retried, never INCONCLUSIVE.
+//
+// PI_ZG_IT_MODEL, PI_ZG_IT_BACKUP_MODEL and PI_ZG_IT_THINKING override the pins.
 //
 // The session runs in a scratch dir with its own agent dir, so it never reads
 // or writes the machine's ~/.pi. The prompt forbids reading or editing files.
@@ -26,6 +42,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -161,6 +178,165 @@ export const assertZgHit = (entries, context = "") => {
   return hit;
 };
 
+// --- Models ------------------------------------------------------------------
+// Pinned so the run depends on a model that advertises tool calling and on the
+// reasoning level that model needs, not on whatever openrouter/free picks. Both
+// pins list tools, tool_choice and reasoning in OpenRouter's catalog
+// (https://openrouter.ai/api/v1/models), so a reasoning request is valid for
+// them and no endpoint can answer "Reasoning is mandatory".
+export const MODELS = {
+  // Free, 262K context, offered with tools by 18 upstream providers — the widest
+  // pool among the :free tool-capable models, so the least likely to queue.
+  backup: process.env.PI_ZG_IT_BACKUP_MODEL || "openai/gpt-oss-120b",
+  primary: process.env.PI_ZG_IT_MODEL || "google/gemma-4-31b-it:free",
+};
+
+// Cheapest paid model with tools and reasoning ($0.022/M prompt tokens), with a
+// wide provider pool, so a fallback run costs a fraction of a cent. It backs up
+// the free primary and only runs when that one fails provider-side.
+//
+// The reasoning level each model needs. Both reason by default on their
+// OpenRouter endpoints; asking for reasoning explicitly is what keeps the
+// request valid where an endpoint refuses a non-reasoning call.
+export const THINKING = {
+  "google/gemma-4-31b-it:free": "high",
+  "openai/gpt-oss-120b": "high",
+};
+
+export const thinkingFor = (model) =>
+  THINKING[model] ?? process.env.PI_ZG_IT_THINKING ?? "high";
+
+// --- Failure classification ---------------------------------------------------
+// Whose fault a failed session is. Provider-side means the package was never
+// exercised (nothing was proven, so the run is inconclusive); extension-side
+// means the package or the engine misbehaved (a real failure, red).
+const HTTP_ERROR =
+  /\b(?:HTTP[\s/]*)?(?:400|401|402|403|404|408|409|422|429|500|502|503|504|529)\b|"(?:code|status)"\s*:\s*(?:4\d\d|5\d\d)\b|rate.?limit/iu;
+const ERROR_CONTEXT =
+  /\b(?:error|errors|failed|failure|invalid|rejected|refused|denied|unavailable|overloaded|rate.?limit|too many|exceeded|timeout|status)\b/iu;
+const REASONING_REQUIRED =
+  /reasoning is mandatory|reasoning (?:is )?required/iu;
+const LOAD_ERROR =
+  /failed to load (?:the )?(?:extension|package)|cannot find module/iu;
+
+// The first line of pi's own output that blames the provider, or null.
+export const providerEvidence = (output) => {
+  const lines = output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  const reasoning = lines.find((line) => REASONING_REQUIRED.test(line));
+  if (reasoning !== undefined) {
+    return `the model requires reasoning: ${reasoning.slice(0, 200)}`;
+  }
+  const http = lines.find(
+    (line) => HTTP_ERROR.test(line) && ERROR_CONTEXT.test(line)
+  );
+  if (http !== undefined) {
+    return `the provider returned an error: ${http.slice(0, 200)}`;
+  }
+  return null;
+};
+
+// null when the session proves the package works, otherwise
+// { kind: "provider" | "extension", reason }.
+export const evaluateRun = ({ status, output, entries }) => {
+  const extensionFailure = (reason) => ({ kind: "extension", reason });
+  const results = zgToolResults(entries);
+  const errored = results.find(
+    (message) => message.isError === true || message.details?.isError === true
+  );
+  if (errored !== undefined) {
+    return extensionFailure(
+      `zg tool result is an error: ${textOf(errored).slice(0, 400)}`
+    );
+  }
+  const hits = results.flatMap(
+    (message) =>
+      message.details?.results ?? message.structuredContent?.results ?? []
+  );
+  const hit = hits.find(
+    (result) =>
+      typeof result?.file === "string" && result.file.endsWith("hello.ts")
+  );
+  if (results.length > 0 && hit === undefined) {
+    return extensionFailure(
+      `zg tool result has no hello.ts hit: ${JSON.stringify(hits).slice(0, 400)}`
+    );
+  }
+  if (hit !== undefined) {
+    // The engine answered correctly, so a nonzero exit is the package's fault.
+    return status === 0
+      ? null
+      : extensionFailure(
+          `pi exited ${status} after the zg tool returned the fixture:\n${output.slice(-800)}`
+        );
+  }
+
+  // No zg tool result at all: decide whose fault that is.
+  const loadFailure = output.split("\n").find((line) => LOAD_ERROR.test(line));
+  if (loadFailure !== undefined) {
+    return extensionFailure(
+      `pi could not load the package: ${loadFailure.trim().slice(0, 300)}`
+    );
+  }
+  if (entries.length > 0 && !zgToolDeclared(entries)) {
+    return extensionFailure(
+      "the session declared no zg tool: the installed package registered nothing"
+    );
+  }
+  const stopped = entries.find(
+    (entry) =>
+      entry?.message?.role === "assistant" &&
+      entry.message.stopReason === "error"
+  );
+  if (stopped !== undefined) {
+    return {
+      kind: "provider",
+      reason: `provider error: ${String(stopped.message.errorMessage ?? "(no message)").slice(0, 300)}`,
+    };
+  }
+  const evidence = providerEvidence(output);
+  if (evidence !== null) {
+    return { kind: "provider", reason: evidence };
+  }
+  const assistant = entries
+    .filter((entry) => entry?.message?.role === "assistant")
+    .map((entry) => entry.message);
+  if (assistant.length === 0) {
+    return {
+      kind: "provider",
+      reason: `no assistant message in the session (pi exited ${status})`,
+    };
+  }
+  const calledTools = assistant.some((message) =>
+    (message.content ?? []).some((block) => block?.type === "toolCall")
+  );
+  if (!calledTools) {
+    const said = assistant
+      .map((message) => textOf(message))
+      .join(" ")
+      .trim();
+    return {
+      kind: "provider",
+      reason: `the model never called any tool (pi exited ${status}): ${said.slice(0, 300) || "(no text)"}`,
+    };
+  }
+  return {
+    kind: "provider",
+    reason: `the model called other tools but never zg (pi exited ${status})`,
+  };
+};
+
+// CI shows this line in the job summary, so a run that proves nothing is
+// visible without opening the log.
+const writeSummary = (line) => {
+  const summary = process.env.GITHUB_STEP_SUMMARY;
+  if (summary) {
+    appendFileSync(summary, `${line}\n`);
+  }
+};
+
 // --- Run ---------------------------------------------------------------------
 
 const main = () => {
@@ -244,8 +420,111 @@ const main = () => {
         /zg tool result is an error/u
       );
       assert.throws(() => assertZgHit([]), /no zg tool result/u);
+
+      // The classification that decides red vs INCONCLUSIVE is the part a
+      // keyless run can still prove: each case below is the shape pi writes for
+      // that failure, and `kind` says whether it may be retried.
+      const assistant = (extra) => ({
+        message: { role: "assistant", stopReason: "stop", ...extra },
+        type: "message",
+      });
+      const zgResult = (entries) => ({
+        message: {
+          content: [{ text: "…", type: "text" }],
+          details: { results: entries },
+          isError: false,
+          role: "toolResult",
+          toolName: "zg",
+        },
+        type: "message",
+      });
+      const cases = [
+        [
+          "fixture hit",
+          [promptEntry, zgResult([{ file: "hello.ts" }])],
+          0,
+          "",
+          null,
+        ],
+        [
+          "reasoning mandatory",
+          [
+            promptEntry,
+            assistant({
+              errorMessage: "400: Reasoning is mandatory",
+              stopReason: "error",
+            }),
+          ],
+          1,
+          "",
+          "provider",
+        ],
+        [
+          "HTTP 502 in output",
+          [promptEntry],
+          1,
+          "HTTP 502: upstream unavailable",
+          "provider",
+        ],
+        ["no assistant message", [promptEntry], 1, "", "provider"],
+        [
+          "no tool call",
+          [
+            promptEntry,
+            assistant({ content: [{ text: "Sorry, cannot.", type: "text" }] }),
+          ],
+          1,
+          "",
+          "provider",
+        ],
+        [
+          "other tool only",
+          [
+            promptEntry,
+            assistant({
+              content: [
+                { args: {}, id: "call_1", name: "read", type: "toolCall" },
+              ],
+              stopReason: "toolUse",
+            }),
+          ],
+          1,
+          "",
+          "provider",
+        ],
+        [
+          "no fixture hit",
+          [promptEntry, zgResult([{ file: "other.ts" }])],
+          1,
+          "",
+          "extension",
+        ],
+        [
+          "no zg declared",
+          [
+            {
+              message: {
+                role: "system",
+                sections: { tools: "<tools>\n- read: read a file\n</tools>" },
+              },
+              type: "message",
+            },
+          ],
+          1,
+          "",
+          "extension",
+        ],
+      ];
+      for (const [name, entries, status, output, expected] of cases) {
+        const verdict = evaluateRun({ entries, output, status });
+        assert.equal(
+          verdict?.kind ?? null,
+          expected,
+          `classification of "${name}" must be ${expected ?? "green"}, got ${JSON.stringify(verdict)}`
+        );
+      }
       console.log(
-        `pi integration assertions self-checked: ${hit.file} accepted, error session rejected`
+        `pi integration assertions self-checked: ${hit.file} accepted, error session rejected, ${cases.length} classification cases confirmed`
       );
       return;
     }
@@ -339,74 +618,141 @@ const main = () => {
     assert.match(reported, /^0\.3\./u, `engine reports ${reported}`);
     console.log(`pi integration: ${zgBin} --version -> ${reported}`);
 
-    // 2. One session, loading the installed package: no -e, and no --skill
-    //    because the package's pi manifest already ships skills/.
+    // 2. One session per attempt, each loading the installed package: no -e, and
+    //    no --skill because the package's pi manifest already ships skills/. Each
+    //    attempt gets its own session dir so two runs never share entries.
     const prompt = [
       "Use the zg tool, and only the zg tool, to search this workspace.",
       "Call it once with query 'where is the theme restored', mode hybrid, limit 3.",
       "Do not read or edit any file and do not run any other tool.",
       "Reply with the file path the tool returned and nothing else.",
     ].join(" ");
+    const attempt = (label, model) => {
+      const dir = path.join(sessionDir, label);
+      console.log(
+        `pi integration: ${label} run on ${model} (thinking ${thinkingFor(model)})`
+      );
+      const run = spawnSync(
+        "pi",
+        [
+          "--approve",
+          "--provider",
+          "openrouter",
+          "--model",
+          model,
+          "--thinking",
+          thinkingFor(model),
+          "--session-dir",
+          dir,
+          "--name",
+          `pi-zgrep-integration-${label}`,
+          "-p",
+          prompt,
+        ],
+        { cwd: work, encoding: "utf-8", env: piEnv, timeout: 240_000 }
+      );
+      const entries = readSessionEntries(dir);
+      const output = `${run.stdout ?? ""}\n${run.stderr ?? ""}\n${run.error?.message ?? ""}`;
+      return {
+        context: `${describeSession(entries)}\npi stdout: ${(run.stdout ?? "").slice(-800)}\npi stderr: ${(run.stderr ?? "").slice(-800)}`,
+        entries,
+        failure: evaluateRun({ entries, output, status: run.status }),
+        model,
+      };
+    };
+
+    const reportPass = (run, how) => {
+      // 3. The structured result, not a substring of the log.
+      const hit = assertZgHit(run.entries, run.context);
+      console.log(
+        `pi integration: session declared tools: ${declaredToolNames(run.entries).join(", ")}`
+      );
+      console.log(
+        `pi integration: zg hit ${hit.file}:${hit.lineStart}${hit.lineEnd === undefined ? "" : `-${hit.lineEnd}`}`
+      );
+      console.log(
+        `pi integration passed (${how}): installed package's zg tool returned hello.ts`
+      );
+    };
+
+    // Extension-side: the package genuinely failed. Red, and never retried.
+    const reportExtensionFailure = (run, reason) => {
+      console.error(
+        `pi integration FAILED — extension-side, not retried (${run.model}): ${reason}\n${run.context}`
+      );
+      writeSummary(
+        `pi integration failed (extension-side): ${run.model}: ${reason}`
+      );
+      process.exitCode = 1;
+    };
+
     if (negative) {
       const missing = path.join(scratch, "missing-zg");
       piEnv.PI_ZG_BIN = missing;
       console.log(
-        `pi integration: PI_ZG_IT_NEGATIVE=1, running with PI_ZG_BIN=${missing}; this run must fail`
+        `pi integration: PI_ZG_IT_NEGATIVE=1, running with PI_ZG_BIN=${missing}; this run must fail and must not be retried`
       );
+      // One attempt, no fallback: the proof is about the engine, not the model.
+      const run = attempt("negative", MODELS.primary);
+      if (run.failure === null) {
+        throw new Error(
+          "PI_ZG_IT_NEGATIVE=1 passed every assertion: the negative proof is broken"
+        );
+      }
+      if (run.failure.kind === "extension") {
+        // The proof holds: with a broken engine the hit assertions cannot pass.
+        console.error(
+          `pi integration negative proof held — extension-side failure, not retried: ${run.failure.reason}`
+        );
+        writeSummary(
+          `pi integration negative proof held: ${run.failure.reason}`
+        );
+        process.exitCode = 1;
+        return;
+      }
+      // The model never reached the engine, so nothing was proven. Still red,
+      // with the reason, because the negative proof is an extension-side check.
+      console.error(
+        `pi integration negative proof NOT demonstrated — provider-side flake before the engine ran: ${run.failure.reason}; rerun\n${run.context}`
+      );
+      writeSummary(
+        `pi integration negative proof not demonstrated (provider-side): ${run.failure.reason}`
+      );
+      process.exitCode = 1;
+      return;
     }
-    const run = spawnSync(
-      "pi",
-      [
-        "--approve",
-        "--provider",
-        "openrouter",
-        "--model",
-        // No --thinking flag: openrouter/free can route to a model that requires
-        // reasoning, and "off" then fails with a 400 before the tool is called.
-        "openrouter/free",
-        "--session-dir",
-        sessionDir,
-        "--name",
-        "pi-zgrep-integration",
-        "-p",
-        prompt,
-      ],
-      { cwd: work, encoding: "utf-8", env: piEnv, timeout: 240_000 }
+
+    const first = attempt("primary", MODELS.primary);
+    if (first.failure === null) {
+      reportPass(first, first.model);
+      return;
+    }
+    if (first.failure.kind === "extension") {
+      reportExtensionFailure(first, first.failure.reason);
+      return;
+    }
+    console.error(
+      `pi integration: provider-side failure on ${first.model} (${first.failure.reason}); retrying once on ${MODELS.backup}`
     );
 
-    const entries = readSessionEntries(sessionDir);
-    const context = `${describeSession(entries)}\npi stdout: ${(run.stdout ?? "").slice(-800)}\npi stderr: ${(run.stderr ?? "").slice(-800)}`;
-    // In the negative run the tool result is the whole point, so it is asserted
-    // before the exit status: the failure has to name the zg error result.
-    if (negative) {
-      assertZgHit(entries, context);
+    const retry = attempt("backup", MODELS.backup);
+    if (retry.failure === null) {
+      reportPass(
+        retry,
+        `${retry.model} fallback after a provider-side failure on ${first.model}`
+      );
+      return;
     }
-    assert.equal(
-      run.status,
-      0,
-      `pi exited ${run.status} (${run.error?.message ?? "no spawn error"}):\n${context}`
+    if (retry.failure.kind === "extension") {
+      reportExtensionFailure(retry, retry.failure.reason);
+      return;
+    }
+    // Both models failed provider-side: the package was never exercised.
+    const reason = `${first.model}: ${first.failure.reason}; ${MODELS.backup}: ${retry.failure.reason}`;
+    console.error(
+      `INCONCLUSIVE: ${reason}\nThe package was never exercised, so this run proves nothing either way; rerun the job.`
     );
-    assert.ok(
-      zgToolDeclared(entries),
-      `the installed package registered no zg tool in the session prompt\n${context}`
-    );
-    // 3. The structured result, not a substring of the log.
-    const hit = assertZgHit(entries, context);
-    console.log(
-      `pi integration: session declared tools: ${declaredToolNames(entries).join(", ")}`
-    );
-    console.log(
-      `pi integration: zg hit ${hit.file}:${hit.lineStart}${hit.lineEnd === undefined ? "" : `-${hit.lineEnd}`}`
-    );
-    // Unreachable while the assertions hold, but stated so a future edit that
-    // weakens them cannot turn the negative run green.
-    assert.ok(
-      !negative,
-      "PI_ZG_IT_NEGATIVE=1 passed the hit assertions: the negative proof is broken"
-    );
-    console.log(
-      "pi integration passed: installed package's zg tool returned hello.ts"
-    );
+    writeSummary(`INCONCLUSIVE: ${reason}`);
   } finally {
     rmSync(scratch, { force: true, recursive: true });
   }

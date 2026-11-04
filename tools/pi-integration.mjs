@@ -25,8 +25,11 @@
 //   retried once on the backup model and, if that also fails provider-side, ends
 //   as "INCONCLUSIVE: <reason>" with exit 0 plus a line in $GITHUB_STEP_SUMMARY:
 //   the package was never exercised, so the run proves nothing either way.
-//   extension-side — a zg tool result that is an error, a result without the
-//   fixture hit, an install or version check that failed, no zg tool in the
+//   A zg tool result that is an error counts as provider-side when the engine
+//   rejected an argument the model invented (INVALID_ARGUMENT, a bad regex), and
+//   a fixture hit anywhere in the session wins over an earlier errored call.
+//   extension-side — any other zg tool result that is an error, a result without
+//   the fixture hit, an install or version check that failed, no zg tool in the
 //   prompt — always exits 1 and is never retried.
 //
 // PI_ZG_IT_NEGATIVE=1 runs the same session with PI_ZG_BIN pointing at a path
@@ -191,8 +194,9 @@ export const assertZgHit = (entries, context = "") => {
 // "429 Rate limit exceeded: free-models-per-day" instead of exercising the pin.
 //
 // Evidence, one session per model against the installed package (2026-11-04):
-// openai/gpt-oss-20b and openai/gpt-oss-120b both called zg and hit hello.ts;
-// nvidia/nemotron-3-ultra-550b-a55b:free did the same until the daily cap, and
+// openai/gpt-oss-120b called zg and hit hello.ts; nvidia/nemotron-3-ultra-550b-
+// a55b:free did the same until the free daily cap; openai/gpt-oss-20b called zg
+// but sent a malformed pattern (`(?:zg()`), so it needs the retry more often; and
 // google/gemma-4-31b-it:free answered 429 "temporarily rate-limited upstream".
 export const MODELS = {
   // $0.05/M prompt, $0.20/M completion, tools + tool_choice + reasoning, and a
@@ -233,6 +237,10 @@ const LOAD_ERROR =
 // e.g. "Upstream error from Near AI: Unexpected token ... expecting ...".
 const UPSTREAM_ERROR =
   /\bupstream (?:error|failure|unavailable|overloaded)\b|\berror from (?:the )?(?:upstream|provider)\b|\bprovider (?:error|returned an error)\b/iu;
+// The engine's own rejection of an argument the model invented. The extension
+// passes the argument through, so the complaint is about the model's tool call.
+const MODEL_ARG_ERROR =
+  /invalid (?:lexical )?search pattern|\bINVALID_ARGUMENT\b|regex parse error|invalid argument/iu;
 
 // The first line of pi's own output that blames the provider, or null.
 export const providerEvidence = (output) => {
@@ -265,14 +273,6 @@ export const providerEvidence = (output) => {
 export const evaluateRun = ({ status, output, entries }) => {
   const extensionFailure = (reason) => ({ kind: "extension", reason });
   const results = zgToolResults(entries);
-  const errored = results.find(
-    (message) => message.isError === true || message.details?.isError === true
-  );
-  if (errored !== undefined) {
-    return extensionFailure(
-      `zg tool result is an error: ${textOf(errored).slice(0, 400)}`
-    );
-  }
   const hits = results.flatMap(
     (message) =>
       message.details?.results ?? message.structuredContent?.results ?? []
@@ -281,6 +281,26 @@ export const evaluateRun = ({ status, output, entries }) => {
     (result) =>
       typeof result?.file === "string" && result.file.endsWith("hello.ts")
   );
+  // The hit comes first: an engine that answered the fixture proved itself, and a
+  // model that called zg with a bad argument before that is the model's problem.
+  const errored = results.find(
+    (message) => message.isError === true || message.details?.isError === true
+  );
+  if (hit === undefined && errored !== undefined) {
+    const text = textOf(errored);
+    // The engine rejected the argument the model invented (a malformed regex, say).
+    // The extension relayed it correctly and the package was never exercised at
+    // the fixture, so this is the model's fault and worth the one retry.
+    if (MODEL_ARG_ERROR.test(text)) {
+      return {
+        kind: "provider",
+        reason: `the model called zg with an argument the engine rejected: ${text.slice(0, 300)}`,
+      };
+    }
+    return extensionFailure(
+      `zg tool result is an error: ${text.slice(0, 400)}`
+    );
+  }
   if (results.length > 0 && hit === undefined) {
     return extensionFailure(
       `zg tool result has no hello.ts hit: ${JSON.stringify(hits).slice(0, 400)}`
@@ -469,6 +489,16 @@ const main = () => {
         },
         type: "message",
       });
+      const zgError = (text) => ({
+        message: {
+          content: [{ text, type: "text" }],
+          details: { isError: true },
+          isError: true,
+          role: "toolResult",
+          toolName: "zg",
+        },
+        type: "message",
+      });
       const cases = [
         [
           "fixture hit",
@@ -540,6 +570,41 @@ const main = () => {
         [
           "fixture hit, pi exits 1 with no provider blame",
           [promptEntry, zgResult([{ file: "hello.ts" }])],
+          1,
+          "",
+          "extension",
+        ],
+        [
+          "hit after an errored call",
+          [
+            promptEntry,
+            zgError("zg error (exit 1): invalid lexical search pattern"),
+            zgResult([{ file: "hello.ts" }]),
+          ],
+          0,
+          "",
+          null,
+        ],
+        [
+          "engine rejected the model's pattern",
+          [
+            promptEntry,
+            zgError(
+              "zg error (exit 1): Error[ZG.ENGINE.INVALID_ARGUMENT]: invalid lexical search pattern: regex parse error:\n    (?:zg()\nerror: unclosed group"
+            ),
+          ],
+          1,
+          "",
+          "provider",
+        ],
+        [
+          "missing PI_ZG_BIN stays extension-side",
+          [
+            promptEntry,
+            zgError(
+              "zg error: PI_ZG_BIN=/tmp/missing-zg is set but zg is not usable there. Fix the path or unset PI_ZG_BIN."
+            ),
+          ],
           1,
           "",
           "extension",

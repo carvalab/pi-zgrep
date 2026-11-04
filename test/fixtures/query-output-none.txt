@@ -1,0 +1,2 @@
+#1 hello.ts:2-4
+2	function loadTheme(): string {

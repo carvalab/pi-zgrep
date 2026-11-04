@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (jiti-loaded), `typebox` for tool schemas, `node:test`, ultracite (Oxlint + Oxfmt), GitHub Actions.
 
-**Spec:** `/home/pacman/Work/pi-zg/doc/specs/2026-09-02-pi-zg-extension.md`
+**Spec:** `doc/specs/2026-09-02-pi-zg-extension.md`
 
 **Verification:** `npm run lint && npm run format:check && npm run typecheck && npm run test` (repo root). E2E: `ZG_TEST_E2E=1 npm run test`.
 
@@ -49,7 +49,7 @@ Parallel-safe: Tasks 1–3 own disjoint files. Tasks 1 and 3 both invoke npm (lo
 - [ ] **Step 1: Create the GitHub repo and push the existing branch**
 
   ```bash
-  cd /home/pacman/Work/pi-zg
+  cd pi-zgrep
   gh repo create carvalab/pi-zg --public --source . --push
   ```
 
@@ -198,6 +198,8 @@ Parallel-safe: Tasks 1–3 own disjoint files. Tasks 1 and 3 both invoke npm (lo
 
 ### Task 3: Install zg and capture compat fixtures
 
+> **Superseded by zg 0.3.0.** Every command in this task was captured against zg 0.2.1, which had `query`/`status`/`index` subcommands and different output shapes (headline `✓ Workspace index is ready`, `matchedBy=`, `query groups (N):`). 0.3.0 turned them into flags. The current capture argv is the table in `test/fixtures/NOTES.md:11-25`; do not re-run the commands below against a 0.3.0 binary.
+
 **TDD scenario:** Trivial change — use judgment (fixture capture; the artifacts ARE the deliverable).
 
 **Spec:** doc/specs/2026-09-02-pi-zg-extension.md § "Components" L63
@@ -257,7 +259,7 @@ Parallel-safe: Tasks 1–3 own disjoint files. Tasks 1 and 3 both invoke npm (lo
 - [ ] **Step 5: Commit**
 
   ```bash
-  cd /home/pacman/Work/pi-zg && git add test/fixtures && git commit -m "Capture zg compat fixtures (help, status, query)"
+  cd pi-zgrep && git add test/fixtures && git commit -m "Capture zg compat fixtures (help, status, query)"
   ```
 
 ## Wave 2 — Core units
@@ -781,7 +783,7 @@ Parallel-safe: Task 8 (docs only) and Task 9 (code+test) own disjoint files.
 
 - [ ] **Step 2: Run the e2e** — `npm run test:e2e` → PASS (real zg; model already cached from Task 3).
 
-- [ ] **Step 3: Manual smoke in a real pi session** — `cd /tmp && pi -e /home/pacman/Work/pi-zg` then ask "where is the theme restored in the sample project?" with the tool available; confirm the `zg` tool fires and results render. (Evidence for the verify phase.)
+- [ ] **Step 3: Manual smoke in a real pi session** — `cd /tmp && pi -e /path/to/pi-zgrep` then ask "where is the theme restored in the sample project?" with the tool available; confirm the `zg` tool fires and results render. (Evidence for the verify phase.)
 
 - [ ] **Step 4: Full verification suite** — `npm run lint && npm run format:check && npm run typecheck && npm run test` → exit 0.
 

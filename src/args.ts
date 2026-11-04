@@ -1,5 +1,10 @@
 import { existsSync } from "node:fs";
 
+// Shared env-flag test: every PI_ZG_* switch is on for *any* non-empty value
+// (README § Configuration), so a blank string counts as unset.
+export const nonEmpty = (v?: string): boolean =>
+  typeof v === "string" && v.length > 0;
+
 export type QueryMode = "hybrid" | "fts" | "vector" | "rg";
 export interface QueryInput {
   query: string;
@@ -11,27 +16,27 @@ export interface QueryInput {
   type?: string;
 }
 
-// F3: input guard. Three classes of input that look like searches but
-// would either be silently misinterpreted by upstream or trigger an
-// unhelpful "missing: <flag>" parse error:
+// zg 0.3.0 replaced subcommands with rg-style flags: every management
+// operation is a --flag (--index/--status/--server) and every search route is
+// an explicit query group (--hybrid/--fts/--vector), because a bare positional
+// word is now literal search text. Anything that still emitted `zg query …`,
+// `zg index …`, or `zg status …` would be searched for, not executed.
+
+// Input guard. Two classes of input that look like searches but would be
+// silently misinterpreted by upstream:
 //   (a) empty query — every route rejects it; reject up-front with a
 //       message the agent can read.
-//   (b) hybrid positional route with a leading-dash query — the query
-//       token would be parsed as a flag (upstream has no separator on
-//       this route). The rg route handles this case via `-e` in
-//       buildQueryArgs, so we only reject hybrid/fts/vector here.
-//   (c) glob/type starting with "-" — would be sent as `-g -x` /
-//       `-t -x`. upstream treats this as a glob value "-x" with no
-//       error; the agent almost certainly meant an exclusion
-//       (`!node_modules`) so force them to be explicit.
+//   (b) glob/type starting with "-" — would be sent as `-g -x` / `-t -x`.
+//       zg takes "-x" as a glob value with no error (the agent almost
+//       certainly meant an exclusion: `!node_modules`), and rejects an
+//       unknown type with "unknown indexed file format: -x". Force them to
+//       be explicit instead.
+// A leading "-" query is NOT rejected: buildQueryArgs attaches it to the
+// explicit route flag (`--hybrid=-x`), which is the only form clap cannot
+// mistake for an option, and the rg route uses `-e`.
 export const validateQueryInput = (i: QueryInput): void => {
   if (i.query.length === 0) {
     throw new Error("query must not be empty");
-  }
-  if (i.mode !== "rg" && i.query.startsWith("-")) {
-    throw new Error(
-      `hybrid/fts/vector routes have no flag separator for the query position; leading "-" queries must use mode=rg (which emits -e). Got query=${JSON.stringify(i.query)}`
-    );
   }
   if (i.glob !== undefined && i.glob.startsWith("-")) {
     throw new Error(
@@ -45,40 +50,63 @@ export const validateQueryInput = (i: QueryInput): void => {
   }
 };
 
-export const buildQueryArgs = (i: QueryInput): string[] => {
-  const args = ["query"];
-  if (i.mode === "fts") {
-    args.push("--fts", i.query);
-  } else if (i.mode === "vector") {
-    args.push("--vector", i.query);
-  } else if (i.mode === "rg") {
-    // F3 (a): a query that begins with "-" would be parsed as a flag
-    // by upstream unless prefixed with `-e`. help-query.txt spells
-    // this out: "Use -e when a pattern begins with '-'". Verified
-    // against real `zg` 0.2.1: `zg query --rg -e "-x" --limit 1`
-    // matches; the bare `zg query --rg "-x" --limit 1` form fails
-    // with "missing: --limit, 1".
-    if (i.query.startsWith("-")) {
-      args.push("--rg", "-e", i.query);
-    } else {
-      args.push("--rg", i.query);
-    }
-  } else {
-    args.push(i.query);
+const routeFlag = (mode: Exclude<QueryMode, "rg">): string => {
+  if (mode === "fts") {
+    return "--fts";
   }
-  // rg route: real `zg` v0.2.1 rejects --preview, --mode, and
-  // --refresh alongside --rg ("--preview is not supported with --rg;
-  // use -A/-B/-C for rg context"; same upstream error shape for
-  // --mode/--refresh). Omit them for rg; keep --limit and the optional
-  // filters.
+  if (mode === "vector") {
+    return "--vector";
+  }
+  return "--hybrid";
+};
+
+export const buildQueryArgs = (i: QueryInput): string[] => {
+  const args: string[] = [];
   if (i.mode === "rg") {
-    args.push("--limit", String(i.limit));
+    // Managed ripgrep. 0.3.0 rejects the indexed options alongside --rg
+    // ("--rg cannot be combined with indexed preview, trace, refresh, or
+    // symbol options"), so only the pattern, --limit, and the file filters
+    // go out. `--rg` already prints `<path>` then two-space indented
+    // `  <line>: <text>` matches, so line numbers come for free.
+    args.push("--rg");
+    // A pattern that begins with "-" is parsed as an option unless it
+    // follows `-e`. Verified against the 0.3.0 binary: `zg --rg -e "-x"`
+    // searches literally; the bare `zg --rg "-x"` form does not.
+    if (i.query.startsWith("-")) {
+      args.push("-e", i.query);
+    } else {
+      args.push(i.query);
+    }
+    args.push("--color", "never", "--limit", String(i.limit));
   } else {
+    // Explicit route flag rather than a positional query: 0.3.0 treats a
+    // path-shaped positional word as a file-name lookup (and warns on
+    // stderr), which would turn a legit query like "auth.ts" into a path
+    // probe. --color never keeps the pipe plain so the parser cannot trip
+    // over ANSI escapes.
+    // A query that begins with "-" rides *attached* to the route flag
+    // (`--hybrid=-v`): in the separated form clap reads it as an option, so a
+    // query that happens to name one of zg's own flags ("--trace",
+    // "--refresh", "-L") dies with `a value is required for '--hybrid
+    // <QUERY>'`, and a harmless "-x" survives only by luck
+    // (crates/zg-cli/src/lib.rs:536 allows hyphen values on the positional,
+    // which does not cover the route option). Verified against the 0.3.0
+    // binary: `--hybrid=-v`, `--hybrid=--trace`, `--fts=--trace` and
+    // `--vector=-v` all return normal results; the separated forms of
+    // `--trace`/`--refresh`/`-L` fail with exit 2.
+    const flag = routeFlag(i.mode);
+    if (i.query.startsWith("-")) {
+      args.push(`${flag}=${i.query}`);
+    } else {
+      args.push(flag, i.query);
+    }
     args.push(
       "--limit",
       String(i.limit),
       "--preview",
       i.preview,
+      "--color",
+      "never",
       "--mode",
       "auto"
     );
@@ -94,11 +122,87 @@ export const buildQueryArgs = (i: QueryInput): string[] => {
   }
   return args;
 };
-export const buildIndexArgs = (extra: string[] = []): string[] => [
-  "index",
-  ...extra,
-];
-export const buildStatusArgs = (): string[] => ["status", "--check-ready"];
+// A workspace's FIRST index needs its embedding model named up front. Upstream
+// `zg --help index` documents the order as `--embedding` > ZVEC_GREP_EMBEDDING >
+// Global config, "falling back to local/potion-code-16m-v2" (upstream
+// zsrc/rust/crates/zg-cli/src/render.rs:566-567 and :934), and the engine
+// implements the same chain with this constant as its last resort
+// (zsrc/rust/crates/zg-engine/src/pipelines/indexing/service.rs:667-688
+// resolving explicit > existing > env > global default > DEFAULT_LOCAL_EMBEDDING,
+// declared at :56). Local and code-tuned, so a fresh non-interactive repo never
+// reaches for a remote model (which would also need --allow-remote,
+// zsrc/rust/crates/zg/src/main.rs:1052-1058).
+export const DEFAULT_NEW_INDEX_EMBEDDING = "local/potion-code-16m-v2";
+
+// Model for a first build: ZVEC_GREP_EMBEDDING is what upstream itself reads
+// (crates/zg-engine/src/models/catalog/resolution.rs:32-46), so it wins over
+// the extension-level PI_ZG_EMBEDDING; both are trimmed and blank counts as
+// unset.
+export const resolveNewIndexEmbedding = (
+  env: Record<string, string | undefined> = process.env
+): string => {
+  for (const name of ["ZVEC_GREP_EMBEDDING", "PI_ZG_EMBEDDING"] as const) {
+    const value = env[name]?.trim();
+    if (value !== undefined && value.length > 0) {
+      return value;
+    }
+  }
+  return DEFAULT_NEW_INDEX_EMBEDDING;
+};
+
+// `--status` notes that mean "there is no index yet" (crates/zg/tests/
+// implicit_index.rs:290 pins "index not configured" for a fresh workspace;
+// "index not created" is the sibling upstream note). Every other not-ready
+// note — "needs update", "failed files", "rebuild required", "status
+// unknown" — describes an index that already exists.
+export const isNewIndexState = (freshness?: string): boolean =>
+  freshness === "index not created" || freshness === "index not configured";
+
+// Coverage notes that describe an index which is queryable *right now* even
+// though `--check-ready` exited nonzero. zg 0.3.0 writes "needs update" when
+// files are pending a refresh — captured on a 4-file repo with 2 pending edits:
+//   Coverage    ██████████░░░░░░░░░░  50%  2 / 4 files (needs update)   exit 1
+// — and then answers every indexed query from that index, stamping each hit
+// `status: possibly_stale` (test/fixtures/status-stale.txt). So the caller can
+// serve it and let the daemon (or `--refresh wait`) catch up, instead of
+// blocking the first query on a rebuild.
+export const isUsableStaleIndex = (freshness?: string): boolean =>
+  freshness === "needs update";
+
+const namesEmbedding = (args: string[]): boolean =>
+  args.some((a) => a === "--embedding" || a.startsWith("--embedding="));
+
+export interface IndexBuildOptions {
+  env?: Record<string, string | undefined>;
+  // True only when zg reported no index at all. Refreshing an existing index
+  // must not pass --embedding: a compatible index reuses its stored model
+  // (crates/zg-cli/src/render.rs:575) and naming a different one fails the
+  // refresh with "Rebuild the index with `zg --index --rebuild`"
+  // (crates/zg-engine/src/pipelines/indexing/service.rs:131-141).
+  newIndex?: boolean;
+}
+
+export const buildIndexArgs = (
+  extra: string[] = [],
+  o: IndexBuildOptions = {}
+): string[] => {
+  // Three cases where the model is never injected, even for a first build: the
+  // caller already named one (a second --embedding is a hard clap error), the
+  // build is a --rebuild of an index that has (or had) its own model — upstream
+  // only *permits* --embedding there (crates/zg-cli/src/render.rs:576) — or it
+  // is --drop, which rejects every index option outright
+  // (crates/zg-cli/src/lib.rs:1535-1551).
+  if (
+    o.newIndex !== true ||
+    namesEmbedding(extra) ||
+    extra.includes("--rebuild") ||
+    extra.includes("--drop")
+  ) {
+    return ["--index", ...extra];
+  }
+  return ["--index", "--embedding", resolveNewIndexEmbedding(o.env), ...extra];
+};
+export const buildStatusArgs = (): string[] => ["--status", "--check-ready"];
 
 export type IndexCommandArgs = { args: string[]; ok: true } | { ok: false };
 
@@ -140,9 +244,9 @@ const splitCommandArgs = (raw: string): string[] | null => {
 // /zg-index argument guard. Flags pass through untouched (thin integrator —
 // upstream can add flags without changes here). A bare word is forwarded only
 // when it exists on disk (upstream's optional positional [root]); anything
-// else is a typo like "status" that upstream kills with [ROOT_NOT_FOUND] —
-// reject it with a usage hint instead of a doomed spawn. `exists` is
-// injectable for tests.
+// else is a typo like "status" that upstream kills with
+// `Error[ZG.ENGINE.NOT_FOUND]: resolve directory …`; reject it with a usage
+// hint instead of a doomed spawn. `exists` is injectable for tests.
 export const parseIndexCommandArgs = (
   raw?: string,
   exists: (p: string) => boolean = existsSync

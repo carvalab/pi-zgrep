@@ -1,9 +1,15 @@
-# Weekly canary: run the test suite against @zvec/zvec-grep@latest.
+# Weekly canary: run the test suite against @zvec/zvec-grep@latest and
+# @earendil-works/pi-coding-agent@latest.
 #
-# Dependabot only sees releases outside our ^0.2.1 range. This job catches
-# breakage inside the allowed range and drift between our pin and upstream
+# Dependabot only sees releases outside the engine range pinned in
+# package.json (dependencies["@zvec/zvec-grep"]) and inside the pi range
+# (devDependencies["@earendil-works/pi-coding-agent"]). This job catches
+# breakage inside the allowed ranges and drift between our pins and upstream
 # latest: CLI flag changes, output shape changes (the fixtures under
-# test/fixtures/ are the tripwire), and e2e behavior on the real engine.
+# test/fixtures/ are the tripwire), e2e behavior on the real engine, and — for
+# pi — the system prompt our guidance has to land in (test/prompt.test.ts reads
+# it back through the SDK, so a pi release that stops rendering promptSnippet
+# or promptGuidelines fails here even though package.json still allows it).
 #
 # Behavior (modeled on the community canary pattern, e.g. smoke tests that
 # auto-open and auto-close a tracking issue):
@@ -41,8 +47,40 @@ jobs:
       - name: Overlay the engine with upstream latest
         run: |
           latest=$(npm view @zvec/zvec-grep version)
-          echo "canary engine: @zvec/zvec-grep@$latest (package.json allows ^0.2.1)"
+          allowed=$(node -p "require('./package.json').dependencies['@zvec/zvec-grep']")
+          echo "canary engine: @zvec/zvec-grep@$latest (package.json allows $allowed)"
           npm install --ignore-scripts --no-save @zvec/zvec-grep@latest
+
+      # Same idea for the harness: `npm test` includes test/prompt.test.ts,
+      # which renders our extension through pi's SDK and asserts the tool
+      # snippet and guidelines reach the model. Running it on the newest pi is
+      # the point — a pi release that drops promptSnippet or stops registering
+      # promptGuidelines breaks users on `@latest` long before our range allows
+      # it, and nothing else in the suite would notice.
+      - name: Overlay pi with upstream latest
+        run: |
+          latest=$(npm view @earendil-works/pi-coding-agent version)
+          allowed=$(node -p "require('./package.json').devDependencies['@earendil-works/pi-coding-agent']")
+          echo "canary pi: @earendil-works/pi-coding-agent@$latest (package.json allows $allowed)"
+          npm install --ignore-scripts --no-save \
+            @earendil-works/pi-coding-agent@latest \
+            @earendil-works/pi-tui@latest
+          # Read the manifest by path: pi does not export "./package.json".
+          node -p "'installed pi: ' + require('./node_modules/@earendil-works/pi-coding-agent/package.json').version"
+          node -p "'installed pi-tui: ' + require('./node_modules/@earendil-works/pi-tui/package.json').version"
+
+      # Informational only: pi publishes no `next` tag today (dist-tags are
+      # `latest` and `legacy-node20`), so this logs instead of installing.
+      - name: Report pi dist-tags
+        continue-on-error: true
+        run: |
+          npm view @earendil-works/pi-coding-agent dist-tags
+          next=$(npm view @earendil-works/pi-coding-agent dist-tags.next || true)
+          if [ -n "$next" ] && [ "$next" != "undefined" ]; then
+            echo "pi@next is $next — not installed by this job"
+          else
+            echo "no pi@next dist-tag"
+          fi
 
       - name: Unit + e2e against latest
         id: tests
@@ -94,9 +132,9 @@ jobs:
         run: |
           DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
           BODY=$(cat <<MSG
-          Canary failed against @zvec/zvec-grep@latest at ${DATE}.
+          Canary failed against @zvec/zvec-grep@latest or @earendil-works/pi-coding-agent@latest at ${DATE}.
 
-          Unit fixtures or e2e disagree with upstream latest. Pin back with \`PI_ZG_BIN\`, or bump the range in package.json after adapting the parser/args (see AGENTS.md, "Update procedure when upstream releases").
+          Unit fixtures or e2e disagree with upstream latest engine output, or pi no longer renders the tool snippet/guidelines into the system prompt (test/prompt.test.ts). Pin back with `PI_ZG_BIN`, or adapt the parser/args or the prompt registration after reading the failing assertion (see AGENTS.md, "Update procedure when upstream releases").
 
           Full log: [run](${RUN_URL})
 

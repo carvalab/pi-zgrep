@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,35 +8,38 @@ import { parseIndexCommandArgs } from "../src/args.ts";
 import { makeRunner } from "../src/index.ts";
 import { parseQueryOutput } from "../src/parse.ts";
 
-test("empty indexed groups parse as empty results instead of format errors", () => {
-  assert.deepEqual(
-    parseQueryOutput(
-      "query groups (1):\nQ1 [supplemental]: absent\nhits: 0\n\nNo matches.\n"
-    ),
-    { results: [] }
-  );
+// zg 0.3.0 prints `No matches.` (exit 0) for a miss on both routes — there is
+// no `query groups (...)` header any more, so an empty result set is just that
+// one line.
+test("an indexed miss parses as empty results instead of a format error", () => {
+  assert.deepEqual(parseQueryOutput("No matches.\n"), { results: [] });
 });
 
-test("indexed paths retain spaces, drive letters and ranking attributes", () => {
+// 0.3.0 hit header: `#<rank> <path>:<start>[-<end>]`, then optional
+// `key: value` metadata, then two-space indented `<line>: <text>` source. Score
+// only appears with --preview detail, which the extension never requests.
+test("indexed paths retain spaces and drive letters", () => {
   for (const file of [
     "docs/file name.md",
     "C:\\Work Folder\\file name.ts",
     "C:/Work Folder/file name.ts",
   ]) {
-    const text = `query groups (1):\nQ1 [primary]: sample\nhits: 1\n#1 score=0.8 matchedBy=fts+vector ${file}:12-14\nsource:\n12\tfunction retry() {}\n`;
+    const text = `#1 ${file}:12-14\nsymbol: [function] retry\n  12: function retry() {}\n`;
     const parsed = parseQueryOutput(text);
     assert.ok("results" in parsed);
     assert.equal(parsed.results[0].file, file);
-    assert.equal(parsed.results[0].score, 0.8);
     assert.equal(parsed.results[0].lineEnd, 14);
+    assert.equal(parsed.results[0].snippet, "function retry() {}");
   }
 });
 
+// Managed rg output: a bare path line (spaces allowed), a blank line between
+// path groups, then two-space indented `<line>: <text>` matches.
 test("rg paths retain spaces, Unicode and drive letters across groups", () => {
   const first = "C:\\Work Folder\\código.ts";
   const second = "docs/my notes.md";
   const parsed = parseQueryOutput(
-    `${first}\n  2:\tfirst match\n  3-\tcontext\n--\n${second}\n  8: second match\n`
+    `${first}\n  2: first match\n\n${second}\n  8: second match\n`
   );
   assert.ok("results" in parsed);
   assert.deepEqual(
@@ -121,7 +124,6 @@ test(
       cwd: dir,
       env: { ...process.env, PATH: dir, Path: dir, TEST_INSTALL_LOG: log },
     }).install();
-    const { readFileSync } = await import("node:fs");
     assert.deepEqual(JSON.parse(readFileSync(log, "utf-8")), [
       "install",
       "-g",

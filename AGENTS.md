@@ -2,94 +2,35 @@
 
 ## What this repo is
 
-`pi-zgrep` (npm: `pi-zgrep`, repo: `carvalab/pi-zgrep`) is a [pi](https://github.com/earendil-works/pi-coding-agent)
-extension that exposes the upstream **zg** engine as **one pi tool**: semantic,
-BM25, hybrid, and ripgrep search with automatic indexing.
+`pi-zgrep` (npm: `pi-zgrep`, repo: `carvalab/pi-zgrep`) is a [pi](https://github.com/earendil-works/pi-coding-agent) extension that exposes the upstream **zg** engine as **one pi tool**: semantic, BM25, hybrid, and ripgrep search with automatic indexing.
 
-The engine is [zvec-ai/zvec-grep](https://github.com/zvec-ai/zvec-grep)
-(npm `@zvec/zvec-grep`, binary `zg`). This package is an **integrator, not the
-engine** — it ships `@zvec/zvec-grep` as a real npm dependency and resolves the
-binary (dependency → PATH → global install fallback), translates a tool call
-into `zg` argv, parses stdout back into a structured result.
+The engine is [zvec-ai/zvec-grep](https://github.com/zvec-ai/zvec-grep) (npm `@zvec/zvec-grep`, binary `zg`). This package is an **integrator, not the engine** — it ships `@zvec/zvec-grep` as a real npm dependency and resolves the binary (dependency → PATH → global install fallback), translates a tool call into `zg` argv, parses stdout back into a structured result.
 
 ## Philosophy
 
-- **Thin integrator.** No search logic here. All heavy lifting happens in the
-  upstream binary; if a feature needs engine work, it belongs upstream.
-- **Fixtures are the compat tripwire.** `test/fixtures/` holds captured output
-  from real `zg` runs. The arg builder and parser are pinned against them.
-  Upstream changing its CLI/output shape fails our tests before it fails users.
-- **Degrade, don't crash.** A parse miss falls through to raw passthrough
-  prefixed with a hint (`/zg-status` + issues link). Never throw at the user
-  over a shape change.
-- **Native tool, not MCP.** pi has a built-in MCP host now (`builtin:mcp`,
-  `pi.registerMcpServer`), and upstream merged its own pi integration after
-  0.2.2 (`zg --install --target pi`, upstream PR #250: writes pi's `mcp.json`
-  plus a guidance block, served by the shared daemon). This extension stays a
-  native pi tool: it owns auto-install, warmup, the ancestor-index guard,
-  argument repair, truncation and TUI rendering, none of which the MCP route
-  has. When upstream adds or changes MCP tools, mirror the useful ones here
-  (see `src/index.ts` tool registration), and keep the README's "use one or
-  the other" note current once upstream releases its integration.
-- **Use pi's tool API, not prompt surgery.** Routing advice lives in
-  `promptSnippet` / `promptGuidelines` on the tool. Do not return
-  `systemPrompt` from `before_agent_start`: pi treats that as replacing the
-  whole prompt for the run.
-- **Tool name `zg` is shared.** `pi-zvec-grep-ext` and `@krosskinetic/pi-zg`
-  also register `zg`; pi keeps the first registration silently.
-- **Zero build.** Ships plain TypeScript (`src/*.ts`); pi loads `.ts`
-  extensions directly. No compile step, no dist.
+- **Thin integrator.** No search logic here. All heavy lifting happens in the upstream binary; if a feature needs engine work, it belongs upstream.
+- **Fixtures are the compat tripwire.** `test/fixtures/` holds captured output from real `zg` runs. The arg builder and parser are pinned against them. Upstream changing its CLI/output shape fails our tests before it fails users.
+- **Degrade, don't crash.** A parse miss falls through to raw passthrough prefixed with a hint (`/zg-status` + issues link). Never throw at the user over a shape change.
+- **Native tool, not MCP.** pi has a built-in MCP host now (`builtin:mcp`, `pi.registerMcpServer`), and zg 0.3.0 ships its own pi integration (`zg --install --target pi`, upstream PR #250: writes pi's `mcp.json` plus a guidance block, served by the shared daemon). This extension stays a native pi tool: it owns auto-install, warmup, the ancestor-index guard, argument repair, truncation and TUI rendering, none of which the MCP route has. When upstream adds or changes MCP tools, mirror the useful ones here (see `src/index.ts` tool registration), and keep the README's "use one or the other" note current.
+- **Use pi's tool API, not prompt surgery.** Routing advice lives in `promptSnippet` / `promptGuidelines` on the tool. Do not return `systemPrompt` from `before_agent_start`: pi treats that as replacing the whole prompt for the run.
+- **Tool name `zg` is shared.** `pi-zvec-grep-ext` and `@krosskinetic/pi-zg` also register `zg`; pi keeps the first registration silently.
+- **Zero build.** Ships plain TypeScript (`src/*.ts`); pi loads `.ts` extensions directly. No compile step, no dist.
 
 ## Upstream tracking & version compatibility
 
-- **Where to check for updates:** GitHub releases at
-  `zvec-ai/zvec-grep` (npm publishes in lockstep as `@zvec/zvec-grep`,
-  historically every 1–2 weeks).
-- **Current compat baseline: zg 0.2.2** (packaged dependency; fixtures were
-  captured on 0.2.1 and still pass on 0.2.2). Fixtures, arg-builder
-  expectations, and the e2e notes in `test/e2e.test.ts` capture that shape.
-  Upstream PR #251 (unreleased) changes `possibly_stale` reporting and `zg
-  index` status output: expect fixture drift on the next release.
-- **Ancestor-index behavior (zg 0.2.2).** Upstream resolves the index by
-  walking from cwd to the filesystem root and taking the first `.zvec-grep/`
-  (`engine/service/root.js`), with no repo boundary; builds skip nested git
-  repos; a bare `zg index` targets that ancestor; and the daemon (auto/server
-  mode) redirects even an explicit child root back to the ancestor.
-  `src/workspace.ts` plans around it: a `.git` between cwd and the ancestor
-  index means "build our own", and that first build runs `--mode direct`.
-  Re-check all four facts when upstream releases (e2e covers them).
-- **Packaged dependency wins over PATH, on purpose.** Resolution order is
-  `PI_ZG_BIN` → packaged `@zvec/zvec-grep` → `zg` on PATH → global install.
-  Fixtures and the parser are pinned to the packaged version, so a global
-  binary at a different version would trade tested output shapes for untested
-  ones, and the packaged dependency upgrades on our cadence (Dependabot plus
-  our release), not the user's. Don't weaken this order; when output shapes
-  drift, re-capture fixtures per the update procedure below.
+- **Where to check for updates:** GitHub releases at `zvec-ai/zvec-grep` (npm publishes in lockstep as `@zvec/zvec-grep`, historically every 1–2 weeks).
+- **Current compat baseline: zg 0.3.0** (packaged dependency, 2026-11-03), and the version floor: the CLI turned subcommands into flags, so a candidate whose `zg --version` is below 0.3.0 is skipped and named in the error rather than handed flags it would read as search text. Fixtures, arg-builder expectations, and the e2e notes in `test/e2e.test.ts` capture that shape.
+- **Ancestor-index behavior (zg 0.3.0).** Upstream resolves the index by walking from cwd to the filesystem root and taking the first `.zvec-grep/` (`engine/service/root.js`), with no repo boundary; builds skip nested git repos; and a bare `zg --index` targets that ancestor. `src/workspace.ts` plans around it: a `.git` between cwd and the ancestor index means "build our own", and that first build runs `--mode direct` (0.3.0's daemon no longer redirects an explicit child root, but the direct transport costs nothing and cannot be redirected by a stale daemon). Re-check all of it when upstream releases (e2e covers them).
+- **Packaged dependency wins over PATH, on purpose.** Resolution order is `PI_ZG_BIN` (exclusive: set but unusable is an error, never a fallback) → the bundled platform package (`@zvec/zvec-grep-<os>-<arch>[-<libc>]/bin/zg`, checksum-verified against the shipped `checksums.json`) → `zg` on PATH, gated on `zg --version` ≥ 0.3.0 → the global-install fallback for dev checkouts. The platform package needs no lifecycle script, so `npm install --ignore-scripts` still yields a working engine (`--omit=optional` is the install that breaks it). Fixtures and the parser are pinned to the packaged version, so a global binary at a different version would trade tested output shapes for untested ones, and the packaged dependency upgrades on our cadence (Dependabot plus our release), not the user's. Don't weaken this order; when output shapes drift, re-capture fixtures per the update procedure below.
 - **Update procedure when upstream releases:**
-  1. `npm install -g @zvec/zvec-grep@latest` (or set `PI_ZG_BIN`), and bump
-     the `@zvec/zvec-grep` range in `package.json` in the same release.
-  2. `npm run test:e2e` — unit fixtures pin old behavior, so also watch for
-     new upstream flags/tools announced in the release notes or its MCP docs.
-  3. If fixtures fail: re-capture per README §Fixtures, update the version
-     notes in `test/e2e.test.ts`, bump this package's version, release.
-- **Daemon lifecycle (upstream docs/06-server.md):** session warmup attempts
-  `zg server on` once per session (idempotent; upstream enforces a single
-  instance per home via the fixed listen port), so one daemon serves all
-  sessions and a dead one revives at session start instead of staying down
-  until the next build. Manual override: `/zg-server on|off|status`.
-  `PI_ZG_SERVER` (non-empty) disables all automatic starts.
+  1. `npm install -g @zvec/zvec-grep@latest` (or set `PI_ZG_BIN`), and bump the `@zvec/zvec-grep` range in `package.json` in the same release.
+  2. `npm run test:e2e` — unit fixtures pin old behavior, so also watch for new upstream flags/tools announced in the release notes or its MCP docs.
+  3. If fixtures fail: re-capture per `CONTRIBUTING.md` § Fixture regeneration, update the version notes in `test/e2e.test.ts`, bump this package's version, release.
+- **Daemon lifecycle (upstream docs/06-server.md):** session warmup attempts `zg --server on` once per session (idempotent; upstream enforces a single instance per home via the fixed listen port), so one daemon serves all sessions and a dead one revives at session start instead of staying down until the next build. Manual override: `/zg-server on|off|status`. `PI_ZG_SERVER` (non-empty) disables all automatic starts.
 
 ## How to check (verification ladder)
 
-**Registry:** always `https://registry.npmjs.org/`, pinned in the repo
-`.npmrc`. Installs resolve through whatever registry is configured, so a
-machine pointed at a private mirror records that mirror's hostnames in
-`package-lock.json`. Those `resolved` URLs are what `npm ci` follows, so a
-lockfile carrying a private host breaks installs for anyone off that network
-and publishes internal infrastructure. If a regenerated lockfile picks up a
-non-npmjs host, delete it and regenerate with the `.npmrc` in place rather
-than hand-editing: npm keeps existing `resolved` entries when versions and
-integrity are unchanged, so the registry setting alone will not clean them.
+**Registry:** always `https://registry.npmjs.org/`, pinned in the repo `.npmrc`. Installs resolve through whatever registry is configured, so a machine pointed at a private mirror records that mirror's hostnames in `package-lock.json`. Those `resolved` URLs are what `npm ci` follows, so a lockfile carrying a private host breaks installs for anyone off that network and publishes internal infrastructure. If a regenerated lockfile picks up a non-npmjs host, delete it and regenerate with the `.npmrc` in place rather than hand-editing: npm keeps existing `resolved` entries when versions and integrity are unchanged, so the registry setting alone will not clean them.
 
 ```bash
 npm run lint           # oxlint
@@ -97,34 +38,18 @@ npm run format:check   # oxfmt
 npm run typecheck      # tsc --noEmit
 npm test               # ~100 hermetic unit tests — no zg binary needed
 ZG_TEST_E2E=1 npm run test:e2e   # real zg binary, hermetic (scratch dir, cached model)
+npm run test:upgrade   # install scenarios: packed tarball ± scripts, old PATH zg, PI_ZG_BIN overrides, 0.2.x → 0.7.0 index upgrade (needs the registry + a 32 MB model)
 ```
 
-CI runs the first four on every push/PR (Node 22, 24, 26, on Ubuntu and
-Windows), then `ZG_TEST_MODEL=1 node --test test/model-load.test.ts`, the
-regression for issue #6, where `zg index` fails to load the local embedding
-model. A separate job runs `npm run test:pi`, a real pi session against
-`openrouter/free` that checks the model calls the zg tool; it skips when
-`OPENROUTER_API_KEY` is unset. Run e2e locally before releases or whenever
-fixtures/upstream versions change. The e2e
-suite exercises the real spawn path: index → semantic / fts / vector / hybrid / rg queries against
-`test/fixtures/sample-project/`.
+CI runs the first four on every push/PR (Node 22, 24, 26, on Ubuntu, Windows and macOS — `macos-latest` for Apple Silicon, `macos-15-intel` for the darwin-x64 payload), then `ZG_TEST_MODEL=1 node --test test/model-load.test.ts`, the regression for issue #6, where `zg --index` fails to load the local embedding model. Two more jobs run the same commit: `upgrade` (`npm run test:upgrade`, Ubuntu + Windows + macOS) and `pi` — a real pi session against a pinned cheap paid OpenRouter model (`openai/gpt-oss-20b`, with `openai/gpt-oss-120b` as the one retry) that checks the model calls the zg tool; it skips when `OPENROUTER_API_KEY` is unset. Free (`:free`) pins are out: this account's free tier allows 50 requests/day, so CI answered `429 free-models-per-day` instead of exercising the pin. Run e2e locally before releases or whenever fixtures/upstream versions change. The e2e suite exercises the real spawn path: index → semantic / fts / vector / hybrid / rg queries against `test/fixtures/sample-project/`.
 
-Upstream-version safety nets: Dependabot opens a range-bump PR when upstream
-releases outside `^0.2.1` (CI runs the fixture tripwires on that PR), and the
-weekly [canary](.github/workflows/canary.yml) overlays
-`@zvec/zvec-grep@latest` and runs unit + e2e, opening or closing a `canary`
-labeled issue on the result. Patch releases inside the range are caught by
-the canary, not Dependabot.
+Upstream-version safety nets: Dependabot opens a range-bump PR when upstream releases outside `^0.3.0` (CI runs the fixture tripwires on that PR), and the weekly [canary](.github/workflows/canary.yml) overlays `@zvec/zvec-grep@latest` and runs unit + e2e, opening or closing a `canary` labeled issue on the result. Patch releases inside the range are caught by the canary, not Dependabot.
 
 ### Manual smoke (live pi run, log-checked)
 
-Interactive: `pi -e .` in this repo (or `pi install npm:pi-zgrep`), then run
-the tool and `/zg-status`. The engine resolves from the packaged dependency
-first; `PI_ZG_BIN` overrides binary lookup; without either (and without `zg`
-on PATH) the extension auto-installs `@zvec/zvec-grep` globally on first use.
+Interactive: `pi -e .` in this repo (or `pi install npm:pi-zgrep`), then run the tool and `/zg-status`. The engine resolves from the packaged dependency first; `PI_ZG_BIN` overrides binary lookup; without either (and without `zg` on PATH) the extension auto-installs `@zvec/zvec-grep` globally on first use.
 
-Non-interactive (what an agent should run — real model, real spawn path,
-session log to inspect):
+Non-interactive (what an agent should run — real model, real spawn path, session log to inspect):
 
 ```bash
 # 1. Run pi with the extension loaded; -p processes the prompt and exits.
@@ -138,35 +63,17 @@ timeout 240 pi -e . -p --session-dir /tmp/pi-zgrep-smoke -n zg-smoke \
 grep -o '"name":"zg"' /tmp/pi-zgrep-smoke/*.jsonl   # expect ≥1 hit
 ```
 
-Pass = the command prints real file paths and the log shows the `zg` tool
-call. Fail = pi loads but the model says it has no `zg` tool (extension
-didn't register — check for a load error at startup), or the tool errors
-(check `zg --version` works and `PI_ZG_BIN` isn't pointing at junk).
+Pass = the command prints real file paths and the log shows the `zg` tool call. Fail = pi loads but the model says it has no `zg` tool (extension didn't register — check for a load error at startup), or the tool errors (check `zg --version` works and `PI_ZG_BIN` isn't pointing at junk).
 
-Without `--session-dir`, pi writes session logs to
-`~/.pi/agent/sessions/<flattened-cwd>/<timestamp>_<uuid>.jsonl`; the
-`toolCall`/`toolResult` records with `"name":"zg"` are what to grep.
+Without `--session-dir`, pi writes session logs to `~/.pi/agent/sessions/<flattened-cwd>/<timestamp>_<uuid>.jsonl`; the `toolCall`/`toolResult` records with `"name":"zg"` are what to grep.
 
-Known failure mode (hit 2026-10-16): semantic results come from another
-project. A stray parent-folder index (it was `~/Dev/.zvec-grep`) answered
-for every repo below it. Fixed in 0.6.0 by the ancestor-index guard; confirm
-with `zg status` (the second line is the resolved root) and delete the stray
-`.zvec-grep/` if it isn't wanted.
+Known failure mode (hit 2026-10-16): semantic results come from another project. A stray parent-folder index (it was `~/Dev/.zvec-grep`) answered for every repo below it. Fixed in 0.6.0 by the ancestor-index guard; confirm with `zg --status` (the second line is the resolved root) and delete the stray `.zvec-grep/` if it isn't wanted.
 
-Known failure mode (hit 2026-09-03): tool returns `zg index failed … zvec
-file metadata storage does not exist`. That is a stale/broken gitignored
-`.zvec-grep/` index in the workspace (interrupted build), not an extension
-bug — the e2e suite still passes. Fix: `rm -rf .zvec-grep && zg index`, then
-re-run the smoke.
+Known failure mode (hit 2026-09-03): tool returns `zg --index failed … zvec file metadata storage does not exist`. That is a stale/broken gitignored `.zvec-grep/` index in the workspace (interrupted build), not an extension bug — the e2e suite still passes. Fix: `rm -rf .zvec-grep && zg --index`, then re-run the smoke.
 
 ### Clean-room test (latest pi, this extension only)
 
-The smoke above runs in the dev checkout, where `node_modules`, the packaged
-engine, and any global `zg` can mask a packaging problem. This procedure tests
-what a user actually gets: **the latest published pi, and this extension and
-nothing else.** Run it before tagging any release — it is the only check that
-catches a broken `files`/manifest/publishConfig, which the whole unit + e2e
-suite happily passes with.
+The smoke above runs in the dev checkout, where `node_modules`, the packaged engine, and any global `zg` can mask a packaging problem. This procedure tests what a user actually gets: **the latest published pi, and this extension and nothing else.** Run it before tagging any release — it is the only check that catches a broken `files`/manifest/publishConfig, which the whole unit + e2e suite happily passes with.
 
 ```bash
 # 0. Use npmjs.org explicitly, so the tarball resolves the same way a user's
@@ -206,73 +113,33 @@ ls -d "$PI_ZG_CLEAN/node_modules/@zvec/zvec-grep"
 grep -o '"name":"zg"' "$PI_ZG_CLEAN"/log/*.jsonl   # expect ≥1 hit
 ```
 
-A failure here that the dev smoke misses is usually one of: `files` in
-`package.json` excluding a needed source file, the `pi.extensions` manifest
-pointing at a path not shipped, or the engine not being a real `dependencies`
-entry (so a user gets a bare extension that installs on first use).
+A failure here that the dev smoke misses is usually one of: `files` in `package.json` excluding a needed source file, the `pi.extensions` manifest pointing at a path not shipped, or the engine not being a real `dependencies` entry (so a user gets a bare extension that installs on first use).
 
-To check the published tarball rather than the local build, swap step 2 for
-`npm i --prefix "$PI_ZG_CLEAN" pi-zgrep@<version>` after the release lands.
+To check the published tarball rather than the local build, swap step 2 for `npm i --prefix "$PI_ZG_CLEAN" pi-zgrep@<version>` after the release lands.
 
 ## Repo map
 
-- `src/index.ts` — extension entry: tool registration, Runner, spawn plumbing
-  (`awaitChild` races close/error; never await the loser — `once(child,
-  "error")` never settles on clean exits)
+- `src/index.ts` — extension entry: tool registration, Runner, spawn plumbing (`awaitChild` races close/error; never await the loser — `once(child, "error")` never settles on clean exits)
 - `src/args.ts` — tool args → `zg` argv (rg routes drop `--preview`/`--mode`)
-- `src/tool.ts` — `prepareArguments` repair, model text (empty/limit hints),
-  pi truncation + full-output file, `structuredContent`, TUI renderers
-- `src/workspace.ts` — ancestor-index guard: which index a cwd belongs to,
-  which root a build targets, no auto-index of home or filesystem root
+- `src/tool.ts` — `prepareArguments` repair, model text (empty/limit hints), pi truncation + full-output file, `structuredContent`, TUI renderers
+- `src/workspace.ts` — ancestor-index guard: which index a cwd belongs to, which root a build targets, no auto-index of home or filesystem root
 - `src/parse.ts` — `zg` stdout → structured result; raw passthrough on miss
-- `src/zg.ts` — global install (npm -g, bun fallback, `--ignore-scripts`
-  retry), PATH probe, version capture
-- `test/` — fixture contract tests, `tool.test.ts` (registration + execute()
-  against a fake `.mjs` engine), `workspace.test.ts`, and `e2e.test.ts`
-  (gated by `ZG_TEST_E2E=1`, includes the ancestor-index regression)
+- `src/zg.ts` — resolver + ensure chain (probe → install → index readiness), pure and test-driven with a fake `Runner`; no child_process here. The real runner (`makeRunner`, `src/index.ts`) owns every spawn, the 0.3.0 version gate, and the global-install fallback (`npm -g`, bun fallback — never `--ignore-scripts` or `--omit=optional`: either one leaves the install without the native engine)
+- `test/` — fixture contract tests, `tool.test.ts` (registration + execute() against a fake `.mjs` engine), `workspace.test.ts`, and `e2e.test.ts` (gated by `ZG_TEST_E2E=1`, includes the ancestor-index regression)
 
 ## Release
 
-Tag `v*` → `.github/workflows/release.yml` publishes via npm **Trusted
-Publishing (OIDC)** — no stored tokens. Workflow: lint + typecheck + tests,
-tag/version match check, `npm publish --provenance`, then a `release` job that
-extracts the tag's section from `CHANGELOG.md` and creates or updates the
-GitHub release. The changelog is curated, not generated: before tagging, run
-`git-cliff` (config in `cliff.toml`) for a raw commit draft, rewrite the
-section as user-facing notes, and commit `CHANGELOG.md`. A missing section
-fails the release job loudly rather than shipping empty notes. The npmjs.com Trusted
-Publisher must name repo `carvalab/pi-zgrep`, workflow `release.yml`,
-environment `npm`, action `npm publish`. Package record bootstrapped locally
-(`pi-zgrep@0.0.0`) because OIDC cannot create a package (npm/cli#8544).
+Tag `v*` → `.github/workflows/release.yml` publishes via npm **Trusted Publishing (OIDC)** — no stored tokens. Workflow: lint + typecheck + tests, tag/version match check, `npm publish --provenance`, then a `release` job that extracts the tag's section from `CHANGELOG.md` and creates or updates the GitHub release. The changelog is curated, not generated: before tagging, run `git-cliff` (config in `cliff.toml`) for a raw commit draft, rewrite the section as user-facing notes, and commit `CHANGELOG.md`. A missing section fails the release job loudly rather than shipping empty notes. The npmjs.com Trusted Publisher must name repo `carvalab/pi-zgrep`, workflow `release.yml`, environment `npm`, action `npm publish`. Package record bootstrapped locally (`pi-zgrep@0.0.0`) because OIDC cannot create a package (npm/cli#8544).
 
-Before tagging: run the **clean-room test** (see § How to check) — latest pi,
-this extension only, installed from the packed tarball. It is the only check
-that exercises `files`, the `pi` manifest, and the packaged engine, all of
-which the dev smoke and the e2e suite pass with regardless of packaging bugs.
-Also confirm every `resolved` URL in `package-lock.json` points at npmjs:
+Before tagging: run the **clean-room test** (see § How to check) — latest pi, this extension only, installed from the packed tarball. It is the only check that exercises `files`, the `pi` manifest, and the packaged engine, all of which the dev smoke and the e2e suite pass with regardless of packaging bugs. Also confirm every `resolved` URL in `package-lock.json` points at npmjs:
 
 ```bash
 grep -c 'registry.npmjs.org' package-lock.json   # expect > 0
 grep -o '"resolved": "https://[^/]*' package-lock.json | sort -u   # npmjs.org only
 ```
 
-After `npm publish` lands, confirm `npm view pi-zgrep version` reports the tag
-you pushed. That check cannot run before the publish, so it is not a pre-tag
-gate.
+After `npm publish` lands, confirm `npm view pi-zgrep version` reports the tag you pushed. That check cannot run before the publish, so it is not a pre-tag gate.
 
 ### pi.dev visibility
 
-The pi package catalog (https://pi.dev/packages) lists npm packages tagged
-`pi-package`. This repo already qualifies: the keyword is set, the `pi`
-manifest declares `pi.extensions`, and peerDeps match the documented core set
-(`@earendil-works/pi-coding-agent`, `typebox`, `"*"` ranges). The engine is a
-real `dependencies` entry — pi's installer runs plain `npm install`, so it
-lands at package-install time with zero lifecycle scripts. That is deliberate:
-npm 12 blocks dependency postinstalls by default (RFC 0054) and pi's installer
-doesn't opt in, so any install-script-based bootstrapping would silently
-never run. Upstream supports this: prebuilt `@zvec/bindings-*` platform
-packages arrive as optional deps, no build step. The runtime `npm -g` install
-survives only as a fallback for dev checkouts (`pi -e .`). Binary resolution
-order: `PI_ZG_BIN` → packaged dependency → PATH → global install. Do not move
-runtime deps into `devDependencies` — pi installs packages with `--omit=dev`.
-Publishing a real version (tag `v*`) is done (0.1.0 onward, repo URL fixed), but as of 2026-09-03 the package is still **absent from the pi.dev gallery** despite the `pi-package` keyword (verified 0 results for `?name=pi-zgrep`; the gallery's filter indexes name, description, author, and npm keywords). The gallery demonstrably skips many qualifiers (5459 listed vs ~9000 `pi-package` packages on npm); cause of exclusion is not externally visible. If still absent after 24-48h from the 0.2.2 metadata/republish, use the report link on any gallery card or open an issue on earendil-works/pi. 0.0.0 remains the bootstrap placeholder name-unrelated; do not delete the npm record.
+The pi package catalog (https://pi.dev/packages) lists npm packages tagged `pi-package`. This repo already qualifies: the keyword is set, the `pi` manifest declares `pi.extensions`, and peerDeps match the documented core set (`@earendil-works/pi-coding-agent`, `typebox`, `"*"` ranges). The engine is a real `dependencies` entry — pi's installer runs plain `npm install`, so it lands at package-install time with zero lifecycle scripts. That is deliberate: npm 12 blocks dependency postinstalls by default (RFC 0054) and pi's installer doesn't opt in, so any install-script-based bootstrapping would silently never run. Upstream supports this: prebuilt `@zvec/zvec-grep-<os>-<arch>[-<libc>]` platform packages arrive as optional deps, no build step. The runtime `npm -g` install survives only as a fallback for dev checkouts (`pi -e .`). Binary resolution order: `PI_ZG_BIN` → packaged dependency → PATH → global install. Do not move runtime deps into `devDependencies` — pi installs packages with `--omit=dev`. Publishing a real version (tag `v*`) is done (0.1.0 onward, repo URL fixed), but as of 2026-11-03 the package is still **absent from the pi.dev gallery** despite the `pi-package` keyword (verified 0 results for `?name=pi-zgrep`; the gallery's filter indexes name, description, author, and npm keywords). The gallery demonstrably skips many qualifiers (5459 listed vs ~9000 `pi-package` packages on npm); cause of exclusion is not externally visible. If still absent 24-48h after the 0.4.0 republish, use the report link on any gallery card or open an issue on earendil-works/pi. 0.0.0 remains the bootstrap placeholder name-unrelated; do not delete the npm record.

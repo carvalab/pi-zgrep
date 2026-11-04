@@ -13,7 +13,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { resolveLocalZgCli } from "../src/index.ts";
+import { resolveLocalEngine } from "../src/index.ts";
 
 const ok = process.env.ZG_TEST_MODEL === "1";
 
@@ -25,12 +25,19 @@ const ok = process.env.ZG_TEST_MODEL === "1";
     writeFileSync(path.join(dir, "hello.ts"), "export const ready = true;\n");
     t.after(() => rmSync(dir, { force: true, recursive: true }));
 
-    // The packaged engine is a JS entry; run it under this process's node, the
-    // same way the extension spawns it.
-    const cli = resolveLocalZgCli(
+    // The packaged 0.3.0 engine is the verified native binary of the
+    // per-platform package; spawn it directly, the same way the extension does.
+    const { cli } = resolveLocalEngine(
       fileURLToPath(new URL("../src", import.meta.url))
     );
-    assert.ok(cli, "packaged @zvec/zvec-grep CLI not found — run npm ci first");
+    assert.ok(
+      cli,
+      "packaged @zvec/zvec-grep native engine not found — run npm ci"
+    );
+    // Name the payload in the CI log. This is the one line that shows *which*
+    // per-platform package resolved (darwin-arm64, darwin-x64, linux-x64-gnu,
+    // win32-x64), so a macOS job passing on a Linux payload cannot hide.
+    t.diagnostic(`engine: ${cli}`);
     const [cmd, prefix] = cli.endsWith(".js")
       ? [process.execPath, [cli]]
       : [cli, []];
@@ -40,7 +47,7 @@ const ok = process.env.ZG_TEST_MODEL === "1";
     // daemon's model load instead and prints a different summary.
     const index = spawnSync(
       cmd,
-      [...prefix, "index", dir, "--debug", "--mode", "direct"],
+      [...prefix, "--index", dir, "--debug", "--mode", "direct"],
       {
         cwd: dir,
         encoding: "utf-8",

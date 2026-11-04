@@ -1,1 +1,1 @@
-exit=1
+Error: workspace index is not ready

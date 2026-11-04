@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 
+import { getOrCreateZg, resetZgCache } from "../src/index.ts";
 import { createZg } from "../src/zg.ts";
 import type { Runner } from "../src/zg.ts";
-// getOrCreateZg + resetZgCache exported from src/zg.ts. F2: parallel
-// tool calls on the same root must share one ensure-chain instance
-// (installP / buildP / failedRoots), so makeRunner+createZg per
+// F2: parallel tool calls on the same root must share one ensure-chain
+// instance (installP / buildP / failedRoots), so makeRunner+createZg per
 // execute doesn't break the memoized-error / lock guarantees.
 
 const fakeRunner = (
@@ -17,33 +17,31 @@ const fakeRunner = (
     // Default: probeStatus returns ready without recording into `calls` so
     // the "ready index" test sees zero calls when no override is supplied.
     calls,
-    install: (): void => {
+    install: (): Promise<void> => {
       calls.push(["<install>"]);
+      return Promise.resolve();
     },
-    probe: (): string | null => "/usr/bin/zg",
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 0, stderr: "", stdout: "" }),
+    probe: (): Promise<string | null> => Promise.resolve("/usr/bin/zg"),
+    probeStatus: () => Promise.resolve({ code: 0, stderr: "", stdout: "" }),
     run: (
       args: string[]
     ): Promise<{ code: number; stderr: string; stdout: string }> => {
       calls.push(args);
       return Promise.resolve({ code: 0, stderr: "", stdout: "" });
     },
-    startServer: (): void => {
-      calls.push(["server", "on"]);
+    startServer: (): Promise<void> => {
+      calls.push(["--server", "on"]);
+      return Promise.resolve();
     },
     stream: (
       args: string[],
-      _o?: { onUpdate?: (s: string) => void }
+      _o?: { onUpdate?: (s: string) => void; signal?: AbortSignal }
     ): Promise<{ code: number }> => {
       calls.push(args);
       return Promise.resolve({ code: 0 });
     },
     ...over,
-  } as Runner & { calls: string[][] };
+  };
 };
 
 test("ready index: no index command runs", async () => {
@@ -55,16 +53,13 @@ test("ready index: no index command runs", async () => {
 
 test("cold index builds once under parallel calls, then starts daemon once", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { root: "/x" });
   await Promise.all([zg.ensureIndex(), zg.ensureIndex(), zg.ensureIndex()]);
-  const builds = r.calls.filter((c) => c[0] === "index");
-  const servers = r.calls.filter((c) => c[0] === "server");
+  const builds = r.calls.filter((c) => c[0] === "--index");
+  const servers = r.calls.filter((c) => c[0] === "--server");
   assert.equal(
     builds.length,
     1,
@@ -75,11 +70,8 @@ test("cold index builds once under parallel calls, then starts daemon once", asy
 
 test("rider during in-flight build gets {} on success (no spurious memo)", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { root: "/x" });
   const [r1, r2] = await Promise.all([zg.ensureIndex(), zg.ensureIndex()]);
@@ -88,7 +80,7 @@ test("rider during in-flight build gets {} on success (no spurious memo)", async
   assert.deepEqual(r1, {});
   assert.deepEqual(r2, {});
   assert.equal(
-    r.calls.filter((c) => c[0] === "index").length,
+    r.calls.filter((c) => c[0] === "--index").length,
     1,
     "shared build still runs exactly once"
   );
@@ -97,11 +89,7 @@ test("rider during in-flight build gets {} on success (no spurious memo)", async
 test("failed build memo: second ensure surfaces status text instead of rebuilding", async () => {
   let n = 0;
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> =>
+    probeStatus: () =>
       Promise.resolve({
         code: 1,
         stderr: "",
@@ -110,8 +98,8 @@ test("failed build memo: second ensure surfaces status text instead of rebuildin
     // Index build goes through `stream` (per spec: long-running commands use
     // stream with onUpdate + signal + cwd). Make it fail so the session-scoped
     // memo engages.
-    stream: (args: string[]): Promise<{ code: number }> => {
-      if (args[0] === "index") {
+    stream: (args) => {
+      if (args[0] === "--index") {
         n += 1;
         return Promise.resolve({ code: 1 });
       }
@@ -153,65 +141,52 @@ test("PI_ZG_BIN set but probe fails -> error naming the var, no install", async 
   await assert.rejects(zg.ensureBinary(), /PI_ZG_BIN/u);
 });
 
-test("ensureBinary returns warning for zg <0.2 and none for >=0.2", async () => {
-  const oldR = fakeRunner({
-    run: (
-      args: string[]
-    ): Promise<{ code: number; stderr: string; stdout: string }> => {
-      if (args[0] === "--version") {
-        return Promise.resolve({ code: 0, stderr: "", stdout: "zg 0.1.9\n" });
-      }
-      return Promise.resolve({ code: 0, stderr: "", stdout: "" });
+test("failed probe surfaces the runner's diagnosis (which binary, which version)", async () => {
+  // The version gate lives in the runner's probe: an old zg on PATH or in
+  // PI_ZG_BIN is skipped there, and probeIssue() names it. ensureBinary has to
+  // carry that detail into the error, otherwise the user only sees "not
+  // installed" while a working 0.2.x binary sits on their PATH.
+  const r = fakeRunner({
+    install: (): never => {
+      throw new Error("should not install");
     },
+    probe: (): Promise<string | null> => Promise.resolve(null),
+    probeIssue: (): string =>
+      "/usr/bin/zg (0.2.1 — zg 0.3.0 or newer is required)",
   });
-  const oldRes = await createZg(oldR, { root: "/x" }).ensureBinary();
-  assert.equal(oldRes.bin, "/usr/bin/zg");
-  assert.match(String(oldRes.warning ?? ""), /0\.1\.9/u);
-
-  const newR = fakeRunner({
-    run: (
-      args: string[]
-    ): Promise<{ code: number; stderr: string; stdout: string }> => {
-      if (args[0] === "--version") {
-        return Promise.resolve({ code: 0, stderr: "", stdout: "zg 0.2.1\n" });
-      }
-      return Promise.resolve({ code: 0, stderr: "", stdout: "" });
-    },
+  const zg = createZg(r, { env: { PI_ZG_AUTO_INSTALL: "1" }, root: "/x" });
+  await assert.rejects(zg.ensureBinary(), (error: Error) => {
+    assert.match(error.message, /0\.2\.1/u);
+    assert.match(error.message, /\/usr\/bin\/zg/u);
+    return true;
   });
-  const newRes = await createZg(newR, { root: "/x" }).ensureBinary();
-  assert.equal(newRes.bin, "/usr/bin/zg");
-  assert.equal(newRes.warning, undefined);
 });
 
-test("version-check rejects: ensureBinary resolves with { bin, warning: undefined }", async () => {
-  // Contract pin: a Runner whose `run` rejects (timeout, spawn ENOENT,
-  // parse miss) must still let ensureBinary resolve with the probed bin.
-  // probeAndVersion wraps runner.run(["--version"]) in try/catch and returns
-  // { bin } on failure — the version probe is warn-only and must never
-  // block use of the binary. (src/zg.ts: probeAndVersion)
+test("ensureBinary does not re-spawn --version after a successful probe", async () => {
+  // probe() already paid for `zg --version`; the ensure chain must not repeat
+  // it (and must not run a 0.3.0 `--version` against anything else).
   const r = fakeRunner({
-    run: (): Promise<{ code: number; stderr: string; stdout: string }> =>
-      Promise.reject(new Error("timeout")),
+    // Simulates the makeRunner closure cache populated by probe's stdout drain.
+    version: (): string => "0.3.0",
   });
-  const res = await createZg(r, { root: "/x" }).ensureBinary();
-  assert.equal(res.bin, "/usr/bin/zg");
-  assert.equal(res.warning, undefined);
+  // Void: the resolved path lives in the runner (probedBin/version()), so no
+  // caller reads a return value any more.
+  assert.equal(await createZg(r, { root: "/x" }).ensureBinary(), undefined);
+  assert.equal(
+    r.calls.filter((c) => c[0] === "--version").length,
+    0,
+    `expected no --version spawn; got calls=${JSON.stringify(r.calls)}`
+  );
 });
 
 test("failed build surfaces last progress lines from onUpdate tail", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
     // Failing build: drives onUpdate so the tail buffer captures the lines
     // zg would have printed, then exits non-zero so runBuild throws.
-    stream: (
-      args: string[],
-      o?: { onUpdate?: (s: string) => void }
-    ): Promise<{ code: number }> => {
-      if (args[0] === "index") {
+    stream: (args, o) => {
+      if (args[0] === "--index") {
         o?.onUpdate?.("progress line 1");
         o?.onUpdate?.("progress line 2");
         o?.onUpdate?.("model download failed: network unreachable");
@@ -255,37 +230,13 @@ test("install runs but zg still missing afterwards => still not on PATH error", 
   await assert.rejects(zg.ensureBinary(), /still not on PATH/u);
 });
 
-// F7: when runner exposes a `version()` cache, probeAndVersion uses
-// it and skips the redundant `zg --version` spawn. The fakeRunner
-// counts --version calls into the shared `calls` array; with the
-// cache in play, --version never appears in calls after probe().
-test("probeAndVersion uses cached version line; no second --version spawn", async () => {
-  const r = fakeRunner({
-    // version() simulates the makeRunner closure cache populated by
-    // probe's stdout drain.
-    version: (): string | undefined => "zg 0.2.1",
-  });
-  const res = await createZg(r, { root: "/x" }).ensureBinary();
-  assert.equal(res.bin, "/usr/bin/zg");
-  assert.equal(res.warning, undefined, "0.2.1 is not pre-1.0");
-  const versionCalls = r.calls.filter((c) => c[0] === "--version");
-  assert.equal(
-    versionCalls.length,
-    0,
-    `expected no --version spawn when cache is populated; got calls=${JSON.stringify(r.calls)}`
-  );
-});
-
 test("riders joining a failing build both get {error} and exactly one build runs", async () => {
   let builds = 0;
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
-    stream: (args: string[]): Promise<{ code: number }> => {
-      if (args[0] === "index") {
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    stream: (args) => {
+      if (args[0] === "--index") {
         builds += 1;
         return Promise.resolve({ code: 1 });
       }
@@ -306,7 +257,6 @@ test("riders joining a failing build both get {error} and exactly one build runs
 // call → install fires per call, build races per call, and the
 // README's "memoized error" claim is false.
 test("getOrCreateZg returns the same ensure chain for the same cwd", async () => {
-  const { getOrCreateZg, resetZgCache } = await import("../src/index.ts");
   resetZgCache();
   let probeCalls = 0;
   let installCalls = 0;
@@ -322,11 +272,8 @@ test("getOrCreateZg returns the same ensure chain for the same cwd", async () =>
       probeCalls += 1;
       return Promise.resolve(installCalls > 0 ? "/usr/bin/zg" : null);
     },
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
     run: (): Promise<{ code: number; stderr: string; stdout: string }> =>
       Promise.resolve({ code: 0, stderr: "", stdout: "" }),
     startServer: (): Promise<void> => Promise.resolve(),
@@ -355,8 +302,141 @@ test("getOrCreateZg returns the same ensure chain for the same cwd", async () =>
   assert.ok(probeCalls >= 2, "probe runs each call (cheap, no caching needed)");
 });
 
-test("getOrCreateZg returns distinct chains for distinct cwds", async () => {
-  const { getOrCreateZg, resetZgCache } = await import("../src/index.ts");
+// A bare workspace answers `--status --check-ready` with exit 1 and
+// `  Coverage    Unavailable (index not configured)` (zsrc crates/zg/tests/
+// implicit_index.rs:290). That build has to name an embedding model: a bare
+// `--index` leaves nothing to resolve and the next non-interactive query is
+// refused with [ZG.ENGINE.NOT_FOUND] (crates/zg/src/main.rs:620-625) instead of
+// returning hits.
+const notReadyStatus =
+  (note: string) =>
+  (): Promise<{ code: number; stderr: string; stdout: string }> =>
+    Promise.resolve({
+      code: 1,
+      stderr: "Error: workspace index is not ready\n",
+      stdout: `  Coverage    Unavailable (${note})\n`,
+    });
+
+// planWorkspace resolves the root, so the argv carries the host's absolute
+// form: `/x` on POSIX, `D:\x` on Windows. Compare against path.resolve so the
+// expectation is not POSIX-only.
+const RESOLVED_ROOT = path.resolve("/x");
+
+test("first index names the default model; PI_ZG_EMBEDDING overrides it", async () => {
+  // 0.3.0 argv: `--index [root] --embedding <model>` — the root is always
+  // explicit so a build can never be redirected to an ancestor's workspace.
+  const first = fakeRunner({
+    probeStatus: notReadyStatus("index not configured"),
+  });
+  await createZg(first, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
+  assert.deepEqual(
+    first.calls.filter((c) => c[0] === "--index"),
+    [["--index", "--embedding", "local/potion-code-16m-v2", RESOLVED_ROOT]]
+  );
+
+  const viaEnv = fakeRunner({
+    probeStatus: notReadyStatus("index not created"),
+  });
+  await createZg(viaEnv, {
+    env: { PI_ZG_EMBEDDING: "local/pi-choice" },
+    root: RESOLVED_ROOT,
+  }).ensureIndex();
+  assert.deepEqual(
+    viaEnv.calls.filter((c) => c[0] === "--index"),
+    [["--index", "--embedding", "local/pi-choice", RESOLVED_ROOT]]
+  );
+});
+
+test("rebuild-required indexes rebuild without --embedding", async () => {
+  const r = fakeRunner({ probeStatus: notReadyStatus("rebuild required") });
+  await createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--index"),
+    [["--index", RESOLVED_ROOT, "--rebuild"]],
+    "a pre-0.3.0 index is unreadable and must be rebuilt"
+  );
+});
+
+// Captured from `zg 0.3.0 --status --check-ready` on an indexed repo with two
+// pending edits: exit 1 plus this Coverage line. Queries still answer from that
+// index (hits stamped `status: possibly_stale`), so a build here would block the
+// first query of the session for nothing — the daemon refreshes in the
+// background, and mode/`--refresh wait` forces it on demand.
+const STALE_COVERAGE =
+  "  Coverage    ██████████░░░░░░░░░░  50%  2 / 4 files (needs update)\n";
+const staleStatus =
+  () => (): Promise<{ code: number; stderr: string; stdout: string }> =>
+    Promise.resolve({
+      code: 1,
+      stderr: "Error: workspace index is not ready\n",
+      stdout: STALE_COVERAGE,
+    });
+
+test("a usable stale index is served, not rebuilt, and the daemon starts", async () => {
+  const r = fakeRunner({ probeStatus: staleStatus() });
+  const res = await createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
+  assert.deepEqual(res, {}, "a stale index is not an error");
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--index"),
+    [],
+    "the index answers queries; a build would block the first call"
+  );
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--server"),
+    [["--server", "on"]],
+    "the daemon owns the refresh"
+  );
+});
+
+test("a failed build surfaces zg's output even with no progress sink", async () => {
+  // The progress tail used to be collected only when the caller passed an
+  // onUpdate, so a build started without one (session warmup never passes one
+  // through ensureIndex) reported a bare exit code and no reason.
+  const r = fakeRunner({
+    probeStatus: notReadyStatus("index not configured"),
+    stream: (args, o): Promise<{ code: number }> => {
+      assert.equal(args[0], "--index");
+      o?.onUpdate?.("Indexing: 0/3 files");
+      o?.onUpdate?.("Error: failed to load local/potion-code-16m-v2");
+      return Promise.resolve({ code: 1 });
+    },
+  });
+  const res = await createZg(r, { env: {}, root: RESOLVED_ROOT }).ensureIndex();
+  assert.match(res.error ?? "", /exit 1/u);
+  assert.match(
+    res.error ?? "",
+    /Last output:[\s\S]*failed to load local\/potion-code-16m-v2/u,
+    "the last build output must ride along"
+  );
+});
+
+test("an aborted build is neither an error nor memoized", async () => {
+  // Aborting is how a session reload (or Esc on a tool call) stops a build. If
+  // that counted as a failed index, every later call in the new session would
+  // answer "previous build attempt failed" and never index again.
+  const ctrl = new AbortController();
+  let builds = 0;
+  const r = fakeRunner({
+    probeStatus: notReadyStatus("index not configured"),
+    stream: (_args, o): Promise<{ code: number }> => {
+      builds += 1;
+      ctrl.abort();
+      return o?.signal?.aborted
+        ? Promise.reject(
+            new DOMException("This operation was aborted", "AbortError")
+          )
+        : Promise.resolve({ code: 0 });
+    },
+  });
+  const zg = createZg(r, { env: {}, root: RESOLVED_ROOT });
+  const owner = await zg.ensureIndex({ signal: ctrl.signal });
+  assert.deepEqual(owner, {}, "a cancelled build is not an index error");
+  const retry = await zg.ensureIndex();
+  assert.deepEqual(retry, {}, "no failedRoots memo from an abort");
+  assert.equal(builds, 2, "the next call starts a fresh build");
+});
+
+test("getOrCreateZg returns distinct chains for distinct cwds", () => {
   resetZgCache();
   const a = getOrCreateZg({
     cwd: "/repo-a",
@@ -392,9 +472,39 @@ test("ready status from a parent folder's index across a repo boundary still bui
   const res = await zg.ensureIndex();
   assert.deepEqual(res, {});
   assert.deepEqual(
-    r.calls.filter((c) => c[0] === "index"),
-    [["index", repoDir, "--mode", "direct"]],
-    "build must name the repo root and bypass the daemon, which redirects it to the parent"
+    r.calls.filter((c) => c[0] === "--index"),
+    [
+      [
+        "--index",
+        "--embedding",
+        "local/potion-code-16m-v2",
+        repoDir,
+        "--mode",
+        "direct",
+      ],
+    ],
+    "build must name the repo root explicitly, and the model: this repo has no index of its own"
+  );
+});
+
+// The status note describes the index zg resolves from cwd — the parent's —
+// while the build targets this repo. `plan.indexRoot !== plan.buildRoot` is the
+// signal that the target starts from nothing, the one case that must name an
+// embedding model (see ensureIndex in src/zg.ts).
+test("a repo nested under an indexed parent names the model for its first build", async () => {
+  const r = fakeRunner();
+  const zg = createZg(r, {
+    exists: existsIn(
+      path.join(parentDir, ".zvec-grep", "manifest.json"),
+      path.join(repoDir, ".git")
+    ),
+    root: repoDir,
+  });
+  await zg.ensureIndex();
+  const build = r.calls.find((c) => c[0] === "--index") ?? [];
+  assert.ok(
+    build.includes("--embedding"),
+    `first build of ${repoDir} must name a model, got ${JSON.stringify(build)}`
   );
 });
 
@@ -410,28 +520,24 @@ test("ready status with no repo boundary trusts the parent index (monorepo subfo
 
 test("cold build always passes an explicit root", async () => {
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { exists: () => false, root: repoDir });
   await zg.ensureIndex();
+  // Unparseable status ("not ready") with no index in the plan: the target
+  // starts from nothing, so the model is named as well (see ensureIndex).
   assert.deepEqual(
-    r.calls.filter((c) => c[0] === "index"),
-    [["index", repoDir]]
+    r.calls.filter((c) => c[0] === "--index"),
+    [["--index", "--embedding", "local/potion-code-16m-v2", repoDir]]
   );
 });
 
 test("never auto-builds an index in the home directory", async () => {
   const home = path.resolve("/home/me");
   const r = fakeRunner({
-    probeStatus: (): Promise<{
-      code: number;
-      stderr: string;
-      stdout: string;
-    }> => Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
+    probeStatus: () =>
+      Promise.resolve({ code: 1, stderr: "", stdout: "not ready" }),
   });
   const zg = createZg(r, { exists: () => false, home, root: home });
   const res = await zg.ensureIndex();
@@ -445,4 +551,33 @@ test("a ready index in the home directory is still used", async () => {
   const r = fakeRunner();
   const zg = createZg(r, { exists: () => false, home, root: home });
   assert.deepEqual(await zg.ensureIndex(), {});
+});
+
+test("a stale parent index still builds this repo across a boundary", async () => {
+  // "needs update" may describe a parent folder's index. Inside a repo with a
+  // `.git` boundary that index is not this repo's, so the stale shortcut must
+  // not swallow the build the boundary guard asks for.
+  const r = fakeRunner({ probeStatus: staleStatus() });
+  const zg = createZg(r, {
+    exists: existsIn(
+      path.join(parentDir, ".zvec-grep", "manifest.json"),
+      path.join(repoDir, ".git")
+    ),
+    root: repoDir,
+  });
+  await zg.ensureIndex();
+  assert.deepEqual(
+    r.calls.filter((c) => c[0] === "--index"),
+    [
+      [
+        "--index",
+        "--embedding",
+        "local/potion-code-16m-v2",
+        repoDir,
+        "--mode",
+        "direct",
+      ],
+    ],
+    "the repo still gets its own index"
+  );
 });

@@ -1,10 +1,24 @@
 // The real runner (Task 7) owns process lifecycle (signal handling, detach
-// for `zg server on`, PATH-aware `zg --version` probe). This file is the
+// for `zg --server on`, PATH-aware `zg --version` probe). This file is the
 // pure logic + interface, fully mocked-testable — no child_process here.
 
-import { buildIndexArgs, buildStatusArgs } from "./args.ts";
+import {
+  buildIndexArgs,
+  buildStatusArgs,
+  isNewIndexState,
+  isUsableStaleIndex,
+  nonEmpty,
+} from "./args.ts";
+import { parseStatusOutput } from "./parse.ts";
 import { isUnsafeAutoIndexRoot, planWorkspace } from "./workspace.ts";
 import type { WorkspacePlan } from "./workspace.ts";
+
+// A build the caller cancelled (session reload/shutdown, Esc on a tool call).
+// Not a failed index: the child died on purpose, the index on disk is intact,
+// and the next call may try again.
+export class BuildAbortedError extends Error {
+  override name = "BuildAbortedError";
+}
 
 export interface RunResult {
   code: number;
@@ -13,17 +27,26 @@ export interface RunResult {
 }
 
 export interface Runner {
-  // Resolved binary path (PI_ZG_BIN → `zg` on PATH) or null when missing.
+  // Resolved binary path (PI_ZG_BIN (exclusive) → packaged platform binary → `zg` on PATH) or null when missing.
   // The real runner implements: `zg --version` with a 10s timeout — slow binaries
   // must not trigger reinstall (spec § Components L57).
   probe: () => Promise<string | null>;
 
-  // F7: optional accessor for the captured version line from the
-  // most recent successful probe. When present, createZg skips the
-  // redundant `zg --version` spawn inside probeAndVersion. Older
-  // test runners without this method must still type-check; the
-  // optional call site uses `runner.version?.()`.
+  // Optional accessor for the version line from the most recent successful
+  // probe (filled in by `probe`, used by /zg-status); call sites use the
+  // optional form `runner.version?.()` but every real runner implements it.
   version?: () => string | undefined;
+
+  // Optional accessor for the binary probe() accepted. The tool path builds a
+  // per-call runner (it owns that call's abort signal) and seeds it with this,
+  // so a query can never run a candidate the version gate rejected.
+  binary?: () => string | undefined;
+
+  // Optional diagnosis for the last failed probe: which candidate binaries
+  // were rejected and which version each one reported. The real runner gates
+  // on `zg --version` >= 0.3.0 (0.2.x had a different CLI), so a failure here
+  // usually means "an old zg is on PATH" and the message has to say so.
+  probeIssue?: () => string | undefined;
 
   // Buffered run for status / help / version. The real runner pipes stdout/stderr.
   run: (args: string[]) => Promise<RunResult>;
@@ -36,20 +59,18 @@ export interface Runner {
   ) => Promise<{ code: number }>;
 
   // Install the global `@zvec/zvec-grep` package (npm -g with bun fallback).
-  // Streams progress via onUpdate. MUST retry with `--ignore-scripts` when the
-  // primary install fails in sharp's postinstall — prebuilt @img/sharp-linux-x64
-  // ships in the tree and is safe to use without node-gyp. See
-  // test/fixtures/NOTES.md:203. The real runner encodes that retry; this
-  // signature is just the contract.
+  // Streams progress via onUpdate. 0.3.0 ships no JS entry, so a plain global
+  // install is enough — never add --ignore-scripts or --omit=optional (either
+  // leaves the install without the per-platform native engine).
   install: () => Promise<void>;
 
-  // Detached `zg server on`, best-effort. Failure is ignored — the daemon
+  // Detached `zg --server on`, best-effort. Failure is ignored — the daemon
   // handles background refresh, watcher updates, hourly reconciliation, and
   // embedding-model reuse (upstream docs/06-server.md § Refresh behavior).
   // Skip when PI_ZG_SERVER is set to any non-empty value (spec § L59).
   startServer: () => Promise<void>;
 
-  // Overridable for tests; default impl runs `zg status --check-ready`.
+  // Overridable for tests; default impl runs `zg --status --check-ready`.
   // Exit code is the API: 0 = ready, non-zero = not ready (stdout/stderr
   // carries the reason, surfaced verbatim on failure — spec § L85 offline
   // embedding-model failure, § L87 parse-miss).
@@ -67,29 +88,30 @@ export interface ZgOpts {
   signal?: AbortSignal;
 }
 
-const nonEmpty = (v?: string): boolean => typeof v === "string" && v.length > 0;
-
 /**
  * Pure resolver + ensure chain. All side effects go through `runner`, so this
  * file is testable with a fake runner (see `test/ensure.test.ts`).
  *
  * Locks (all session-scoped to this `createZg` instance):
  *   - `installP`   — at most one in-flight install; concurrent callers share it.
- *   - `buildP`     — at most one in-flight `zg index` build per session.
- *   - `serverStarted` — `zg server on` fires exactly once after first successful build.
+ *   - `buildP`     — at most one in-flight `zg --index` build per session.
+ *   - `serverStarted` — `zg --server on` fires exactly once after first successful build.
  *
  * The session-scoped `failedRoots` memo prevents silent rebuild loops when a
  * build legitimately fails (offline machine, broken repo): the second probe
- * surfaces the original `zg status` text instead of starting another doomed
+ * surfaces the original `zg --status` text instead of starting another doomed
  * build. The retry-on-cold-start path is one attempt per root per session.
  */
-// `zg index` argv after the subcommand. The root is always explicit: a bare
-// `zg index` targets the nearest ancestor index, which may belong to a parent
+// `zg --index` argv after the flag. The root is always explicit: a bare
+// `zg --index` targets the nearest ancestor index, which may belong to a parent
 // folder rather than this repo. A first build across a repo boundary also
-// forces `--mode direct`, because the daemon (auto/server modes) resolves the
-// requested root back to the ancestor's workspace and rebuilds that instead
-// (verified against zg 0.2.2). Once the repo has its own index, the nearest
-// lookup finds it and later builds go through the daemon as usual.
+// forces `--mode direct`: with zg 0.2.2 the daemon (auto/server modes) resolved
+// the requested root back to the ancestor's workspace and rebuilt that instead.
+// zg 0.3.0 no longer does — `zg --index <child>` with the daemon running builds
+// at the child (test/fixtures/NOTES.md, finding b) — but the direct transport
+// stays because it costs nothing and cannot be redirected by a stale daemon.
+// Once the repo has its own index, the nearest lookup finds it and later builds
+// go through the daemon as usual.
 export const boundaryBuildArgs = (plan: WorkspacePlan): string[] =>
   plan.trustStatus ? [plan.buildRoot] : [plan.buildRoot, "--mode", "direct"];
 
@@ -99,65 +121,37 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
   let serverStarted = false;
   const failedRoots = new Set<string>();
 
-  const probeAndVersion = async (): Promise<{
-    bin: string;
-    warning?: string;
-  } | null> => {
-    const bin = await runner.probe();
-    if (!bin) {
-      return null;
-    }
-    // F7: probe() already paid for `zg --version` — reuse the
-    // captured line when available. Falls back to a buffered
-    // `runner.run(["--version"])` for older runners without the
-    // optional method, or when probe captured empty stdout.
-    const cached = runner.version?.();
-    const versionText =
-      cached !== undefined && cached.length > 0
-        ? cached
-        : await (async (): Promise<string> => {
-            // F3: warn on pre-0.2 upstream (spec § Components L57).
-            // Version probe is warn-only: a failure here (timeout,
-            // spawn ENOENT, parse miss) must never block use of the
-            // binary — return { bin } with no warning and let the
-            // real runner own the recovery path.
-            try {
-              const v = await runner.run(["--version"]);
-              return v.stdout;
-            } catch {
-              return "";
-            }
-          })();
-    const m = versionText.match(/(?<major>\d+)\.(?<minor>\d+(?:\.\d+)?)/u);
-    let warning: string | undefined;
-    if (m?.groups) {
-      const major = Math.trunc(Number(m.groups.major));
-      const minor = Math.trunc(Number(m.groups.minor));
-      if (major === 0 && minor < 2) {
-        warning = `zg ${m[0]} is below 0.2; the upstream is pre-1.0 and may be unstable.`;
-      }
-    }
-    return { bin, warning };
+  // The version gate lives in the runner's probe (a 0.2.x binary must never
+  // receive 0.3.0 flags), so a successful probe means "usable binary". The
+  // rejection detail, when there is one, comes from runner.probeIssue().
+  const probeAndVersion = async (): Promise<boolean> =>
+    (await runner.probe()) !== null;
+
+  const rejected = (): string => {
+    const issue = runner.probeIssue?.();
+    return issue === undefined || issue.length === 0 ? "" : `\n${issue}`;
   };
 
-  const ensureBinary = async (): Promise<{ bin: string; warning?: string }> => {
-    const first = await probeAndVersion();
-    if (first) {
-      return first;
+  // Returns nothing on purpose: the resolved path already lives in the
+  // runner (probedBin / version()), and every caller discarded the old
+  // `{ bin }` wrapper.
+  const ensureBinary = async (): Promise<void> => {
+    if (await probeAndVersion()) {
+      return;
     }
-    // PI_ZG_BIN set-but-broken → error naming the var, NO fallback to PATH or
+    // PI_ZG_BIN set-but-unusable → error naming the var, NO fallback to PATH or
     // install. User explicitly chose this path; silent fallback would surprise
     // them. (spec § Components L57)
     if (nonEmpty(opts.env?.PI_ZG_BIN)) {
       throw new Error(
-        `PI_ZG_BIN=${opts.env?.PI_ZG_BIN} is set but zg is not executable there. Fix the path or unset PI_ZG_BIN.`
+        `PI_ZG_BIN=${opts.env?.PI_ZG_BIN} is set but zg is not usable there. Fix the path or unset PI_ZG_BIN.${rejected()}`
       );
     }
     // PI_ZG_AUTO_INSTALL non-empty → skip install; surface the exact manual
     // command so the user can run it themselves.
     if (nonEmpty(opts.env?.PI_ZG_AUTO_INSTALL)) {
       throw new Error(
-        "zg is not installed. Install it with: npm install -g @zvec/zvec-grep"
+        `zg is not installed. Install it with: npm install -g @zvec/zvec-grep${rejected()}`
       );
     }
     if (!installP) {
@@ -175,43 +169,67 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
       })();
     }
     await installP;
-    const again = await probeAndVersion();
-    if (!again) {
+    if (!(await probeAndVersion())) {
       throw new Error(
         "zg install finished but the binary is still not on PATH. Try: npm install -g @zvec/zvec-grep"
       );
     }
-    return again;
   };
 
+  // `rebuild` is set when the status probe reported "rebuild required": an
+  // index from a pre-0.3.0 zg under <root>/.zvec-grep is unreadable by 0.3.0,
+  // and a plain `zg --index` then fails with "This index is incompatible with
+  // the current version of zg" instead of upgrading. `--index --rebuild` is the
+  // upstream recovery (zg-cli implicit_index tests), so ride it automatically
+  // once. `newIndex` is true only when zg reported no index at all, which is the
+  // one case that must name an embedding model (see buildIndexArgs).
   const runBuild = async (
     buildArgs: string[],
+    rebuild: boolean,
+    newIndex = false,
     hooks: Pick<ZgOpts, "signal" | "onUpdate"> = {}
   ): Promise<void> => {
     // F2: buffer the last ~10 progress lines so a failed build can surface
-    // zg's own output instead of pointing the user at `zg status`. Every
+    // zg's own output instead of pointing the user at `zg --status`. Every
     // line still forwards to opts.onUpdate verbatim.
     const TAIL_MAX = 10;
     const tail: string[] = [];
     const userOnUpdate = hooks.onUpdate ?? opts.onUpdate;
-    const wrappedOnUpdate = userOnUpdate
-      ? (s: string): void => {
-          tail.push(s);
-          if (tail.length > TAIL_MAX) {
-            tail.shift();
-          }
-          userOnUpdate(s);
-        }
-      : undefined;
-    const res = await runner.stream(buildIndexArgs(buildArgs), {
-      cwd: opts.root,
-      onUpdate: wrappedOnUpdate,
-      signal: hooks.signal ?? opts.signal,
-    });
+    // The tail is collected even with no progress sink: a caller that shows no
+    // progress (session warmup) still has to report *why* a build failed.
+    const wrappedOnUpdate = (s: string): void => {
+      tail.push(s);
+      if (tail.length > TAIL_MAX) {
+        tail.shift();
+      }
+      userOnUpdate?.(s);
+    };
+    // `newIndex` names the embedding model for a workspace that has no index
+    // yet; refreshes and --rebuild keep the model the index already stores.
+    // See buildIndexArgs in args.ts.
+    const extra = rebuild ? [...buildArgs, "--rebuild"] : buildArgs;
+    const signal = hooks.signal ?? opts.signal;
+    let res: { code: number };
+    try {
+      res = await runner.stream(
+        buildIndexArgs(extra, {
+          env: opts.env,
+          newIndex: !rebuild && newIndex,
+        }),
+        { cwd: opts.root, onUpdate: wrappedOnUpdate, signal }
+      );
+    } catch (error) {
+      // runner.stream throws when the signal dies (it kills the child first),
+      // so a cancellation arrives as an abort, not as an exit code.
+      throw signal?.aborted === true ? new BuildAbortedError() : error;
+    }
+    if (signal?.aborted === true) {
+      throw new BuildAbortedError();
+    }
     if (res.code !== 0) {
       const tailText =
         tail.length > 0 ? `\nLast output:\n${tail.join("\n")}` : "";
-      throw new Error(`zg index failed (exit ${res.code}).${tailText}`);
+      throw new Error(`zg --index failed (exit ${res.code}).${tailText}`);
     }
   };
 
@@ -224,8 +242,9 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     }
   };
 
-  // Daemon start, at most once per chain (session + root). `zg server on` is
-  // idempotent (prints ready, same pid) and upstream enforces one instance
+  // Daemon start, at most once per chain (session + root). `zg --server on` is
+  // idempotent (prints ready, same pid), replaces a leftover 0.2.x daemon
+  // (which cannot serve a 0.3.0 client), and upstream enforces one instance
   // per home via the fixed listen port, so attempts from other sessions are
   // harmless no-ops.
   const startServerOnce = (): void => {
@@ -249,6 +268,20 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     if (st.code === 0 && plan.trustStatus) {
       return {};
     }
+    const status = parseStatusOutput(st.stdout);
+    const freshness = "raw" in status ? undefined : status.freshness;
+    // A usable-but-stale index is served as-is. zg 0.3.0 answers every indexed
+    // query from it and stamps each hit `status: possibly_stale` (the parser
+    // turns that into `stale: true`), so a build here would block the first
+    // query — and put a full refresh on session start — for nothing. The daemon
+    // refreshes in the background; `refresh=wait` forces it for one query, and
+    // /zg-index remains the explicit rebuild. Never across a repo boundary:
+    // there the stale note may describe a parent folder's index, which is not
+    // this repo's index at all.
+    if (isUsableStaleIndex(freshness) && plan.trustStatus) {
+      startServerOnce();
+      return {};
+    }
     // F1: a concurrent call already started a build for this session — just
     // wait for it. Adding the root to failedRoots here would mark the
     // in-flight build as already-failed and surface a spurious memo to the
@@ -257,17 +290,21 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
       try {
         await buildP;
       } catch (error) {
-        return { error: (error as Error).message };
+        // A build cancelled by its owner (reload, Esc) leaves nothing behind
+        // to report: the next call may simply build again.
+        return error instanceof BuildAbortedError
+          ? {}
+          : { error: (error as Error).message };
       }
       return {};
     }
     // No build in flight. Already attempted this root this session and it
-    // failed → don't loop. Surface the verbatim `zg status` text (or stderr)
+    // failed → don't loop. Surface the verbatim `zg --status` text (or stderr)
     // so the user sees what zg actually said (offline → embedding-model
     // download failure, broken repo → indexer error, etc. — spec § L85, § L87).
     if (failedRoots.has(opts.root)) {
       return {
-        error: `zg index is not ready (previous build attempt failed). zg status said: ${st.stdout || st.stderr}`,
+        error: `zg --index is not ready (previous build attempt failed). zg --status said: ${st.stdout || st.stderr}`,
       };
     }
     if (isUnsafeAutoIndexRoot(plan.buildRoot, opts.home)) {
@@ -275,16 +312,36 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
         error: `not auto-indexing ${plan.buildRoot}: it is a home directory or filesystem root, and an index there would capture every folder below it. Use mode=rg here, start pi inside a project folder, or run /zg-index to index it on purpose.`,
       };
     }
+    // An index from a pre-0.3.0 zg is unreadable by 0.3.0: `--status` reports
+    // "rebuild required" in the Coverage note and both `--index` and every
+    // indexed query refuse until it is rebuilt.
+    const needsRebuild = freshness === "rebuild required";
+    // No index at all (fresh workspace, no configured model): the build must be
+    // told which model to use, otherwise a bare `--index` has nothing to
+    // resolve and every query answers [ZG.ENGINE.NOT_FOUND] instead of
+    // searching (crates/zg/src/main.rs:620-625 refuses to auto-create it).
+    // A status note describes the index zg resolves from this cwd, which may be
+    // a parent folder's, while the build targets plan.buildRoot. When that root
+    // has no index of its own — a repo nested under an indexed parent, the
+    // 0.6.0 boundary case — the build starts from nothing exactly like a fresh
+    // workspace and needs the model named for the same reason.
+    const newIndex =
+      isNewIndexState(freshness) || plan.indexRoot !== plan.buildRoot;
     // Synchronously assign buildP before any await so concurrent riders see
     // it set and join the in-flight build instead of falling into the
     // failedRoots memo branch above. failedRoots is mutated only inside the
     // wrapper — after the build has actually settled.
     buildP = (async (): Promise<unknown> => {
       try {
-        await runBuild(boundaryBuildArgs(plan), hooks);
+        await runBuild(boundaryBuildArgs(plan), needsRebuild, newIndex, hooks);
         startServerOnce();
       } catch (error) {
-        failedRoots.add(opts.root);
+        // A cancelled build is not a failed index: memoizing it would make every
+        // later call this session report "previous build attempt failed" and
+        // never index again.
+        if (!(error instanceof BuildAbortedError)) {
+          failedRoots.add(opts.root);
+        }
         throw error;
       } finally {
         buildP = undefined;
@@ -294,7 +351,9 @@ export const createZg = (runner: Runner, opts: ZgOpts) => {
     try {
       await buildP;
     } catch (error) {
-      return { error: (error as Error).message };
+      return error instanceof BuildAbortedError
+        ? {}
+        : { error: (error as Error).message };
     }
     return {};
   };

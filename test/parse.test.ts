@@ -8,36 +8,54 @@ import {
   renderResults,
 } from "../src/parse.ts";
 
-const q = () =>
-  readFileSync(new URL("fixtures/query-output.txt", import.meta.url), "utf-8");
-const qRg = () =>
-  readFileSync(
-    new URL("fixtures/query-output-rg.txt", import.meta.url),
-    "utf-8"
-  );
-const sReady = () =>
-  readFileSync(new URL("fixtures/status-ready.txt", import.meta.url), "utf-8");
-const sNotReady = () =>
-  readFileSync(
-    new URL("fixtures/status-notready.txt", import.meta.url),
-    "utf-8"
-  );
+const fixture = (name: string): string =>
+  readFileSync(new URL(`fixtures/${name}`, import.meta.url), "utf-8");
 
-test("parses captured hybrid output into results", () => {
-  const r = parseQueryOutput(q());
+// Every fixture here was captured from the real `zg` 0.3.0 binary against
+// test/fixtures/sample-project; see fixtures/NOTES.md for the exact argv.
+
+test("parses captured hybrid output (--preview short) into results", () => {
+  const r = parseQueryOutput(fixture("query-output.txt"));
   assert.equal(
     "results" in r,
     true,
     `parse missed; got ${JSON.stringify(r).slice(0, 200)}`
   );
   if ("results" in r) {
-    assert.ok(r.results.length > 0);
-    assert.ok(
-      r.results[0].file.includes("hello.ts"),
-      `first hit should be the sample file: ${JSON.stringify(r.results[0])}`
-    );
-    assert.ok(typeof r.results[0].lineStart === "number");
+    assert.equal(r.results.length, 1);
+    assert.deepEqual(r.results[0], {
+      file: "hello.ts",
+      lineEnd: 4,
+      lineStart: 2,
+      snippet: 'function loadTheme(): string {\n  return "dark";\n}',
+    });
   }
+});
+
+test("parses captured multi-query output (`-- query i/n:` dividers)", () => {
+  const r = parseQueryOutput(fixture("query-output-multi.txt"));
+  assert.equal("results" in r, true);
+  if ("results" in r) {
+    // One hit per query group, both pointing at the same function.
+    assert.equal(r.results.length, 2);
+    assert.equal(r.results[0].file, "hello.ts");
+    assert.equal(r.results[1].lineStart, 2);
+  }
+});
+
+test("parses captured --preview none output (tab-prefixed source)", () => {
+  const r = parseQueryOutput(fixture("query-output-none.txt"));
+  assert.equal("results" in r, true);
+  if ("results" in r) {
+    assert.equal(r.results.length, 1);
+    assert.equal(r.results[0].snippet, "function loadTheme(): string {");
+  }
+});
+
+test("`No matches.` parses to an empty result list", () => {
+  assert.deepEqual(parseQueryOutput(fixture("query-no-matches.txt")), {
+    results: [],
+  });
 });
 
 test("parse miss returns raw, never fabricates", () => {
@@ -46,41 +64,76 @@ test("parse miss returns raw, never fabricates", () => {
 });
 
 test("parses captured --rg output into results (ripgrep-shaped)", () => {
-  // --rg output is bare-path-first then `<line>:\t<text>` entries —
-  // different shape from the default `query groups (N):` stanza. The
-  // parser must detect this shape and return structured results, not
-  // fall through to {raw} with the "file an issue" banner.
-  const r = parseQueryOutput(qRg());
+  // --rg prints a bare path line, a blank line between path groups, then
+  // two-space indented `<line>: <text>` matches — a different shape from the
+  // indexed `#<rank> <path>:<range>` blocks. The parser must detect it and
+  // return structured results with line numbers.
+  const r = parseQueryOutput(fixture("query-output-rg.txt"));
   assert.equal(
     "results" in r,
     true,
     `rg parse missed; got ${JSON.stringify(r).slice(0, 200)}`
   );
   if ("results" in r) {
-    assert.ok(r.results.length > 0);
+    assert.equal(r.results.length, 2);
     assert.equal(r.results[0].file, "hello.ts");
     assert.equal(r.results[0].lineStart, 1);
-    // First match line is the comment containing "loadTheme()".
     assert.match(String(r.results[0].snippet ?? ""), /loadTheme/u);
+    assert.equal(r.results[1].lineStart, 2);
   }
 });
 
 test("garbage rg-shaped input still returns {raw}", () => {
-  // Looks superficially like rg output (path-ish line, colon-ish line)
-  // but the match line is malformed → bail to raw, do not fabricate.
+  // Looks superficially like rg output (path-ish line, then a line that is
+  // neither a path nor a match) → bail to raw, do not fabricate.
   const r = parseQueryOutput("notreallyapath\nfoo bar baz\n");
   assert.deepEqual(r, { raw: "notreallyapath\nfoo bar baz\n" });
 });
 
-test("status parser extracts ready/freshness, miss returns raw", () => {
-  // input shape comes from the captured `zg status` fixture
-  const ready = parseStatusOutput(sReady());
+test("indexed header without a line range returns {raw}", () => {
+  // 0.3.0 prints `#1 <path>` (no `:<line>`) for path-lookup results; the
+  // extension forces an explicit route flag so it never sees those, and the
+  // parser refuses to invent a line number.
+  assert.deepEqual(parseQueryOutput("#1 auth.ts\n"), {
+    raw: "#1 auth.ts\n",
+  });
+});
+
+test("status parser: ready fixture → ready/fresh", () => {
+  const ready = parseStatusOutput(fixture("status-ready.txt"));
   assert.equal("raw" in ready, false);
   if ("raw" in ready) {
     throw new Error("expected parsed");
   }
   assert.equal(ready.ready, true);
   assert.equal(ready.freshness, "fresh");
+});
+
+test("status parser: not-ready fixture forwards the upstream readiness note", () => {
+  const r = parseStatusOutput(fixture("status-notready.txt"));
+  assert.equal("raw" in r, false);
+  if ("raw" in r) {
+    throw new Error("expected parsed");
+  }
+  assert.equal(r.ready, false);
+  assert.equal(r.freshness, "rebuild required");
+});
+
+test("status parser: pending edits (needs update) keep the note, not a rebuild", () => {
+  // Captured from `zg 0.3.0 --status` on an indexed repo with one changed file.
+  // The exit code is nonzero but the index still answers queries, so the note
+  // has to survive as-is: the caller decides what "usable" means, not the
+  // parser.
+  const r = parseStatusOutput(fixture("status-stale.txt"));
+  assert.equal("raw" in r, false);
+  if ("raw" in r) {
+    throw new Error("expected parsed");
+  }
+  assert.equal(r.ready, false);
+  assert.equal(r.freshness, "needs update");
+});
+
+test("status parser returns raw for input it cannot recognize", () => {
   const miss = parseStatusOutput("??");
   assert.equal("raw" in miss, true);
   if ("raw" in miss) {
@@ -88,62 +141,74 @@ test("status parser extracts ready/freshness, miss returns raw", () => {
   }
 });
 
-test("status parser on not-ready fixture returns ready=false, 'not configured' when label says so", () => {
-  // The "not configured" label is the upstream signal that no index
-  // exists yet — distinct from a stale-but-existing index. README
-  // claims a tri-state (missing/stale/fresh); "not configured" is
-  // the "missing" bucket.
-  const r = parseStatusOutput(sNotReady());
-  assert.equal("raw" in r, false);
-  if ("raw" in r) {
-    throw new Error("expected parsed");
+// 0.3.0 marks each hit `status: possibly_stale` while its index is behind the
+// worktree. That per-hit line is the only stale signal on STDOUT: the run
+// trailer (`results: served_from_current_index`, `background_refresh: idle
+// (n/m)`) is written to stderr and never reaches the parser (see
+// fixtures/NOTES.md). The flag has to ride on the hit, or the model never
+// learns the snippet may be outdated.
+test("a stale hit parses with stale: true on the hit", () => {
+  const parsed = parseQueryOutput(fixture("query-output-stale.txt"));
+  assert.equal(
+    "results" in parsed,
+    true,
+    `parse fell back to raw: ${JSON.stringify(parsed).slice(0, 200)}`
+  );
+  if ("results" in parsed) {
+    assert.equal(parsed.results.length, 1);
+    assert.deepEqual(parsed.results[0], {
+      file: "hello.ts",
+      lineEnd: 4,
+      lineStart: 2,
+      snippet: 'function loadTheme(): string {\n  return "dark";\n}',
+      stale: true,
+    });
   }
-  assert.equal(r.ready, false);
-  assert.equal(r.freshness, "not configured");
+  // A fresh index prints no status line, so the flag stays absent.
+  const fresh = parseQueryOutput(fixture("query-output.txt"));
+  assert.ok("results" in fresh);
+  assert.equal(fresh.results[0]?.stale, undefined);
 });
 
-test("rendering is ripgrep-style lines per result", () => {
+test("rendering is one ripgrep-style line per result", () => {
   const out = renderResults({
     results: [
       {
         file: "src/a.ts",
         lineEnd: 7,
         lineStart: 3,
-        score: 0.9,
         snippet: "export function loadTheme",
       },
     ],
   });
-  assert.match(out, /src\/a\.ts:3-7\s+0\.9\s+export function loadTheme/u);
+  // The score column is empty for a 0.3.0 short preview (no score is printed),
+  // exactly as the renderer in src/parse.ts lays it out.
+  assert.equal(out, "src/a.ts:3-7    export function loadTheme");
 });
 
-// zg 0.2.2: function hits carry an outline section with a blank line and a
-// `calls:` list, then `matched:` and `source:`. Before 0.6.0 the parser
-// stopped at the blank line, hit `calls:`, and returned raw for the whole
-// result. Captured from `zg query "turn engine stdout into structured hits"
-// --limit 3 --preview short --mode auto -g 'src/**'` on this repo.
-test("outline blocks (zg 0.2.2 function hits) parse instead of falling to raw", () => {
-  const parsed = parseQueryOutput(
-    readFileSync(
-      new URL("fixtures/query-output-outline.txt", import.meta.url),
-      "utf-8"
-    )
-  );
+// zg 0.3.0 function/symbol hits: the header is `#<rank> <path>:<range>`, then a
+// `symbol:` / `scope:` metadata line, then the numbered source lines. There is no
+// `outline:`/`calls:`/`matched:` block any more (0.2.2 printed one; 0.3.0 only
+// does inside `--preview detail`, which the extension never requests). Captured
+// from `zg --hybrid "where is the theme returned" --color never --limit 3`.
+test("symbol hits with metadata lines parse instead of falling to raw", () => {
+  const parsed = parseQueryOutput(fixture("query-output-outline.txt"));
   assert.ok("results" in parsed, "must not fall back to raw");
   assert.deepEqual(
     parsed.results.map((r) => `${r.file}:${r.lineStart}-${r.lineEnd}`),
-    ["src/parse.ts:138-217", "src/tool.ts:308-336", "src/zg.ts:9-13"]
+    ["src/theme.ts:1-3", "src/theme.ts:5-9", "src/theme.ts:6-8"]
   );
-  const [first, second] = parsed.results;
+  const [first, second, third] = parsed.results;
   assert.equal(
     first?.snippet?.split("\n")[0],
-    "parseQueryOutput = (text: string): QueryParse => {"
+    "function loadTheme(): string {"
   );
-  assert.match(first?.snippet ?? "", /calls: parseRgOutput/u);
-  assert.equal(second?.snippet?.split("\n")[0], "renderHits = (");
-  assert.doesNotMatch(
-    second?.snippet ?? "",
-    /^\d+\t/mu,
-    "line numbers stripped"
+  assert.equal(second?.snippet?.split("\n")[0], "class AuthService {");
+  assert.equal(
+    third?.snippet?.split("\n")[0],
+    "validate(token: string): boolean {"
   );
+  // `symbol:`/`scope:` frame the hit; they are not source text.
+  assert.doesNotMatch(first?.snippet ?? "", /^symbol:/mu);
+  assert.doesNotMatch(third?.snippet ?? "", /^symbol:|scope:/mu);
 });

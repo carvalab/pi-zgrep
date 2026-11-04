@@ -1,8 +1,40 @@
 # Changelog
 
-All notable changes to pi-zgrep. Release sections are curated before tagging
-(user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts
-the raw commit list to rewrite from.
+All notable changes to pi-zgrep. Release sections are curated before tagging (user-facing notes, not commit subjects); `git-cliff` with `cliff.toml` drafts the raw commit list to rewrite from.
+
+## [v0.7.0] - 2026-11-03
+
+**Breaking**
+
+- Requires zg ≥ 0.3.0. zg 0.3.0 is a native Rust rewrite with an rg-style CLI, so the extension emits `zg --hybrid|--fts|--vector <query>`, `zg --rg <pattern>`, `zg --index`, `zg --status` and `zg --server on|off|status` only; the 0.2.x subcommand forms are gone. An older binary is now rejected by name instead of being handed flags it would read as search text.
+- `PI_ZG_BIN` is exclusive and self-diagnosing. When set it is the only candidate: missing, non-executable, the unmaterialized install stub, or older than 0.3.0 all produce one error naming the variable, the path and the version found — never a silent fallback to the bundled engine or PATH.
+
+**Added**
+
+- Bundled-engine resolution for the native package: read `platforms.json`, locate `@zvec/zvec-grep-<os>-<arch>[-<libc>]`, verify `bin/<binary>` against the shipped `checksums.json` (byte length plus sha256), then fall back to a materialized `bin/zg.exe` that passes an ELF/PE/Mach-O magic check. The resolver is injectable, so unit tests never reach a real `node_modules`.
+- `/zg-status` now reports every rejected candidate with its path, version and reason; `/zg-server on` replaces a leftover 0.2.x daemon in place instead of failing on the protocol mismatch.
+- Upgrade path from 0.2.x needs no user action: an unreadable legacy index shows up as `rebuild required` and is rebuilt exactly once with `--index --rebuild`, and the first session's `--server on` performs the daemon migration.
+- Hits the engine marks `status: possibly_stale` are flagged to the model. zg writes that line on each hit while its index catches up with an edit, and it is the only stale signal on stdout (the `results:`/`background_refresh:` run trailer goes to stderr, which the tool does not read). The result text now carries one `Note: index is refreshing; N result(s) marked possibly_stale may be outdated. Re-run or use mode=rg for exact current text.` line, and `results[]` in `structuredContent` gains `stale: true`, so the `possibly_stale` fallback the tool description asks for is finally actionable.
+- The `pi` integration run now tests the package a user installs and classifies its own failures. It `npm pack`s the repo, installs that tarball with `pi install`, asserts the installed `node_modules/@zvec/zvec-grep-<platform>/bin/zg` reports 0.3.x, then parses the session JSONL for a `zg` toolResult that hits the fixture. A provider-side failure (HTTP 4xx/5xx, 429, an upstream stream error, no assistant message, no tool call) is retried once on the backup model and then ends as `INCONCLUSIVE` with exit 0; anything extension-side exits 1 and is never retried — a throttled endpoint can no longer mask a broken extension.
+- Routing is measured, not assumed. `tools/routing-eval.mjs` replays concept and holdout prompts through real pi sessions and reports how often the model reaches for `zg` first, and `.github/workflows/routing.yml` fails a PR that touches `src/index.ts`, `skills/**`, the eval script or `package.json` when that rate on `concept` drops below 80%. The full matrix runs weekly and keeps its JSON as an artifact; both skip without `OPENROUTER_API_KEY`, so forks still pass. Background and results are in `doc/routing-eval.md`.
+
+**Changed**
+
+- Installs that block lifecycle scripts keep working (npm 12 / RFC 0054 defaults, `--ignore-scripts`) because the per-platform package already ships the binary; the sharp/node-gyp workaround and the retry dance are gone. Only `--omit=optional` breaks search, and the error now says to reinstall without it or set `PI_ZG_BIN`.
+- The runner spawns the native binary directly (never through `node`) and prefers the bundled engine over PATH; a PATH copy is used only when no platform package resolves.
+- The parser reads 0.3.0 output — `#1 <path>:<start>-<end>` result blocks, `No matches.` as an empty result set, and the Coverage note `Unavailable (rebuild required)` as freshness — and returns raw passthrough for any structural miss instead of fabricating fields. On a stale index, each hit is stamped `status: possibly_stale` on stdout while the index catches up and still parses into a hit with `stale: true`; the run trailer (`results: …`, `background_refresh: …`) goes to stderr and is not parsed.
+- `/zg-index` forwards a bare word only when it exists on disk (upstream rejects an unknown root with `Error[ZG.ENGINE.NOT_FOUND]: resolve directory …`, exit 1); anything else gets a usage line instead of a doomed build.
+- Tested against pi 1.5.0, now the dev dependency (`^1.5.0`; `peerDependencies` stays `*`). pi 1.5 validates tool arguments with `pi-schema` rather than TypeBox: the `zg` schema is plain JSON Schema, so it validates unchanged, and `prepareArguments` still runs before validation. The package also ships `CHANGELOG.pi.md` from `pi.changelogPath`, so pi 1.5's Extension Updates can show what changed after an update — pi's parser needs `## 0.7.0` headings, which the `v`-prefixed `CHANGELOG.md` that the release job matches cannot carry.
+
+**Fixed**
+
+- A boolean `refresh` from a model is read as a flag instead of failing validation. gpt-oss-20b sent `{"refresh": true}` and pi answered `Validation failed for tool "zg": refresh: expected string, got boolean`, costing the call; `prepareZgArguments` now maps `true` — and `"true"`, in any casing — to `"wait"`, and drops `false` for the `auto` default.
+- The install-scenario matrix — bundled engine, rejected 0.2.1, omitted optional deps, `PI_ZG_BIN` overrides and the 0.2.x index upgrade — is pinned by a test suite (`npm run test:upgrade`, Ubuntu, Windows and macOS), so a resolution regression fails CI instead of shipping.
+- The guidance pi renders into the system prompt is pinned by a test, so a reword that drops the `zg`-first advice fails CI instead of quietly sending models back to grep.
+- The first index on a fresh repo no longer fails with `ZG.ENGINE.NOT_FOUND`: a build that starts from nothing passes `--embedding` explicitly, resolved from `ZVEC_GREP_EMBEDDING`, then `PI_ZG_EMBEDDING`, then the local default `local/potion-code-16m-v2`.
+- Session warmup has a lifecycle. A reload (`/new`, resume) or a shutdown now cancels the warmup it replaces instead of leaving the previous `zg --index` running and pushing progress into a dead session, a cancelled build is no longer memoized as a failed index — that memo made every later call in the new session answer `previous build attempt failed` and never index again — and on Windows the cancelled child is waited for before a teardown removes its workspace, so a temp-dir cleanup no longer races the process it just killed. Thanks to Rodrigo Jäger (@rodrigojager).
+- A usable but stale index is served instead of rebuilt. `zg --status --check-ready` exits nonzero with `(needs update)` as soon as files wait for a refresh, which used to mean a blocking rebuild at session start; zg 0.3.0 answers every indexed query from that index anyway, stamping each hit `status: possibly_stale`, so the daemon refreshes it in the background instead. `refresh: "wait"` forces the refresh for one query and `/zg-index` still rebuilds on demand. Thanks to Rodrigo Jäger (@rodrigojager).
+- A failed `zg --index` always reports zg's own output. The last progress lines were buffered only when the caller passed a progress callback, so the one build that has no such callback — the session warmup — failed with a bare exit code. Thanks to Rodrigo Jäger (@rodrigojager).
 
 ## [v0.6.0] - 2026-10-16
 

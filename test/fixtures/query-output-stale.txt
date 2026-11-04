@@ -1,0 +1,6 @@
+#1 hello.ts:2-4
+status: possibly_stale
+symbol: [function] loadTheme
+  2: function loadTheme(): string {
+  3:   return "dark";
+  4: }

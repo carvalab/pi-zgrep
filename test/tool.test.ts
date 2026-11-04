@@ -97,6 +97,27 @@ test("prepareArguments: null/empty optionals are dropped, pattern/q alias query"
   });
 });
 
+test("prepareArguments: boolean refresh maps true to wait, false is dropped", () => {
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: true }), {
+    query: "x",
+    refresh: "wait",
+  });
+  // false means the "auto" default, so the key goes away entirely.
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: false }), {
+    query: "x",
+  });
+});
+
+test('prepareArguments: string refresh "TRUE" is a boolean flag too', () => {
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: "TRUE" }), {
+    query: "x",
+    refresh: "wait",
+  });
+  assert.deepEqual(prepareZgArguments({ query: "x", refresh: " False " }), {
+    query: "x",
+  });
+});
+
 test("prepareArguments: non-objects pass through untouched", () => {
   assert.equal(prepareZgArguments(null), null);
   assert.equal(prepareZgArguments("x"), "x");
@@ -145,6 +166,33 @@ test("unparsed output keeps the raw passthrough with the issue hint", () => {
     formatQueryText({ raw: "weird" }, { limit: 10, mode: "hybrid" }),
     /unparsed.*carvalab\/pi-zgrep\):\nweird$/su
   );
+});
+
+// The stale signal is a per-hit line on stdout that the parser now keeps as
+// `stale: true`. Without this note the model reads a stale snippet as current
+// text and never applies the "fall back when a result says possibly_stale"
+// guidance in the tool description.
+test("stale hits add one note to the text and to structuredContent", () => {
+  const parsed = parseQueryOutput(fixture("query-output-stale.txt"));
+  const text = formatQueryText(parsed, { limit: 10, mode: "hybrid" });
+  assert.match(text, /^hello\.ts:2-4/u);
+  assert.match(
+    text,
+    /^Note: index is refreshing; 1 result marked possibly_stale may be outdated\. Re-run or use mode=rg for exact current text\.$/mu
+  );
+  // Exactly one line of note, not one per hit.
+  assert.equal(text.split("\n").filter((l) => l.startsWith("Note:")).length, 1);
+  // The flag rides along for programmatic callers and validates against the
+  // declared outputSchema.
+  const detail = toStructured(parsed, false);
+  assert.equal(detail.results[0]?.stale, true);
+  assert.ok(Value.Check(ZgOutputSchema, detail), "stale result shape");
+  // A fresh hit gets no note.
+  const fresh = formatQueryText(parseQueryOutput(fixture("query-output.txt")), {
+    limit: 10,
+    mode: "hybrid",
+  });
+  assert.doesNotMatch(fresh, /possibly_stale/u);
 });
 
 // --- Truncation --------------------------------------------------------------------
@@ -331,8 +379,9 @@ test("registers one zg tool with snippet, guidelines, annotations and renderers"
     "zg-server",
     "zg-status",
   ]);
-  // Guidance now rides on promptGuidelines; no whole-prompt replacement.
-  assert.deepEqual(cap.events, ["session_start"]);
+  // Guidance now rides on promptGuidelines; no whole-prompt replacement. The
+  // only lifecycle hooks are the warmup's: start it, and cancel it on shutdown.
+  assert.deepEqual(cap.events, ["session_start", "session_shutdown"]);
 });
 
 test("every guideline names zg (pi lists them among all tools' rules)", () => {
@@ -398,12 +447,18 @@ const makeFakeZg = (dir: string): string => {
   const p = path.join(dir, "fake-zg.mjs");
   writeFileSync(
     p,
+    // zg 0.3.0 CLI: `--version` reports >= 0.3.0 (the runner gates on it),
+    // `--status --check-ready` prints the Coverage block, and every search route
+    // is a flag rather than the old `query` subcommand.
     `import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_ZG_LOG, JSON.stringify(args) + "\\n");
-if (args[0] === "--version") { console.log("0.2.2"); process.exit(0); }
-if (args[0] === "status") { console.log("✓ Workspace index is ready"); process.exit(0); }
-if (args[0] === "query") {
+if (args[0] === "--version") { console.log("0.3.0"); process.exit(0); }
+if (args[0] === "--status") {
+  process.stdout.write("  Coverage    ████████████████████ 100%  1 / 1 files\\n");
+  process.exit(0);
+}
+if (["--hybrid", "--fts", "--vector", "--rg"].includes(args[0])) {
   process.stdout.write(readFileSync(process.env.FAKE_ZG_OUT, "utf-8"));
   process.stderr.write(process.env.FAKE_ZG_ERR ?? "");
   process.exit(Number(process.env.FAKE_ZG_CODE ?? 0));
@@ -483,14 +538,16 @@ test("execute: hybrid query returns text, details and structuredContent", async 
   const structured = result.structuredContent?.results as unknown[] | undefined;
   assert.equal(structured?.length, 1);
   assert.ok(Value.Check(ZgOutputSchema, result.structuredContent));
-  const query = log.find((a) => a[0] === "query");
+  const query = log.find((a) => a[0] === "--hybrid");
   assert.deepEqual(query, [
-    "query",
+    "--hybrid",
     "where is the theme restored",
     "--limit",
     "3",
     "--preview",
     "short",
+    "--color",
+    "never",
     "--mode",
     "auto",
   ]);
@@ -517,13 +574,17 @@ test("execute: engine failure is an error result with stderr", async (t) => {
   assert.equal(result.content[0]?.text, "zg error (exit 2): bad things");
 });
 
+// 0.3.0 accepts a leading "-" query (buildQueryArgs attaches it to the route
+// flag), so the remaining up-front guard is a filter value that would be read
+// as a flag by zg itself.
 test("execute: invalid input is rejected before any engine spawn", async (t) => {
-  const { log, result } = await runTool(t, { query: "-flag" }, { out: "" });
-  assert.equal(result.isError, true);
-  assert.match(
-    result.content[0]?.text ?? "",
-    /leading "-" queries must use mode=rg/u
+  const { log, result } = await runTool(
+    t,
+    { glob: "-x", query: "anything" },
+    { out: "" }
   );
+  assert.equal(result.isError, true);
+  assert.match(result.content[0]?.text ?? "", /glob must not start with "-"/u);
   assert.deepEqual(log, [], "no probe, install, status or build");
 });
 

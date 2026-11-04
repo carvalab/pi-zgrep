@@ -1,28 +1,55 @@
 Usage:
-  zg query <query> [options]
-  zg query --hybrid <query> --fts <query> --vector <query> [--fuse]
-  zg query --rg [rg-options] <pattern> [path...]
+  zg <query> [options]
+  zg --hybrid <query> --fts <query> --vector <query> [--fuse]
+  zg --rg [rg-options] <pattern> [path...]
+  zg --rg --files [discovery-options] [path...]
 
 Search routes:
-  positional query                  Hybrid FTS and vector search
+  positional words                  File paths use current files and literal text; other words form one hybrid query
   --hybrid <query>                  Add an explicit hybrid query
   --fts <query>                     Add an exact/lexical query
   --vector <query>                  Add a semantic/vector query
   --fuse                            Fuse all query groups into one ranked list
   --rg                              Run exhaustive managed ripgrep
 
+Positional arguments are joined with spaces, even if separately quoted:
+  zg connection pool timeout                 One query: connection pool timeout
+  zg "connection pool" "timeout"             The same query, with a warning
+  zg "connection pool" "socket timeout"      One query, with a warning
+  zg --hybrid "connection pool" --hybrid "socket timeout"
+                                            Two explicit queries
+The warning is written to stderr when multiple nonempty positional arguments
+include one with internal whitespace. Shell quote characters are not available.
+--hybrid, --fts, and --vector remain separate, repeatable queries.
+Managed --rg keeps its pattern and path arguments separate.
+An ordinary single path-shaped query such as auth.ts first matches current file
+names without reading contents. If no name matches, current source is searched
+literally. A complete miss returns No matches., including with a warm index.
+Automatic path lookup prints a warning on stderr; use --hybrid to force
+hybrid search. Explicit query routes, trace, refresh and symbol options bypass it.
+With --files, every positional argument is an input file or directory; no pattern
+is required. Use -g 'auth.ts' to select files by name.
+
 Result options:
   --limit <n>                       Maximum results per group (default: 7)
-  --human                           Human-readable output (default: agent markdown)
-  --preview <none|short|full>       Indexed preview size (default: none; --human: full)
+  --preview <none|short|full|detail> Indexed output detail (default: short)
+  --color <auto|always|never>       Color output (default: auto)
   --debug                           Print diagnostics to stderr
   --trace                           Include per-hit indexed search trace
   --refresh <background|wait|off>   Refresh policy (defaults: server=background, direct=off)
                                     In direct mode, background warns and falls back to off
   --mode <direct|server|auto>       Select indexed query transport (default: auto)
 
-Indexed results are shown by query group, preserving each group's own rank.
-A result that matches more than one group is shown in each matching group.
+Preview modes: none keeps one source line; short uses compact bounded source;
+full uses compact full source; detail adds metadata, outlines, and file grouping.
+Full previews do not retrieve an entire function or file. TTY affects only color.
+Multi-query results start each nonempty group with its original query and position.
+Plain output uses -- query i/n: text --; colored output adds a dim separator rule.
+Auto colors terminal output and leaves pipes plain; NO_COLOR disables auto color.
+Use --color always to retain color in pipes, or --color never to disable it.
+
+All preview modes preserve result order, ranks, and matched content.
+A result appears in each matching group; only --fuse combines groups.
 
 Embedding runtime:
   --api-key <key>                   Embedding provider API key
@@ -30,19 +57,34 @@ Embedding runtime:
   --device <device>                 auto, cpu, metal, vulkan, cuda
   --allow-remote                    Allow Remote Embedding for this command only
 
+Device and model-cache overrides apply to this query and its refresh only;
+they do not change saved workspace settings.
+
 File filters:
   -g, --glob <glob>                 Include paths; prefix with ! to exclude; repeatable
   --iglob <glob>                    Case-insensitive path glob; repeatable
-  -t, --type <type>                 Include a ripgrep file type; repeatable
-  -T, --type-not <type>             Exclude a ripgrep file type; repeatable
+  -t, --type <format>               Include an engine format, e.g. rust or markdown
+  -T, --type-not <format>           Exclude an engine format; repeatable
+  --category <category>             Include an engine category, e.g. code or document
+  --category-not <category>         Exclude a file category; repeatable
   --modified-after <time>           Only files modified after a date or epoch milliseconds
   --modified-before <time>          Only files modified before a date or epoch milliseconds
-  --symbol-type <type>              module, class, interface, function, value, alias
+  --symbol-type <type>              alias, class, enum, function, interface, module, value
   --prefer-symbol                   Prefer exact indexed symbols
 
-Managed --rg supports common ripgrep matching, context, engine, encoding,
-discovery, glob, and type flags. Use -e when a pattern begins with "-".
-Options that replace rg's output format are rejected.
+Managed --rg uses the embedded Rust regex engine (--engine default).
+Matching: -F, -i/-s/-S, -w/-x, -v, -U, --multiline-dotall, --crlf, -a.
+Bounds: -A/-B/-C, -m/--max-count (per file), -j/--threads (0 = automatic).
+Discovery: -u/-uu/-uuu, --no-ignore-*, --one-file-system, globs and types.
+File listing: --files prints all selected paths without reading their contents;
+-0/--null uses NUL separators. No index or daemon is needed in any client mode.
+The list is sorted and has no headings or result limit. Recursive discovery
+skips .git and .zvec-grep; explicit file inputs are still listed.
+--limit is rejected with --files.
+Exit status for --files: 0 = files found, 1 = no files, 2 = discovery error.
+Patterns preserve whitespace; -e accepts empty patterns and leading "-".
+Unicode BOM decoding is automatic. PCRE2, compressed search, explicit encoding,
+and options that replace rg's output format are not supported.
 
 Environment:
   ZVEC_GREP_MODE         Default client mode: direct, server, or auto
@@ -51,4 +93,4 @@ Environment:
   ZVEC_GREP_MODEL_CACHE  Local embedding model cache directory
   ZVEC_GREP_DEVICE       Local embedding device: auto, cpu, metal, vulkan, or cuda
 
-See zg help environment for precedence and Server-mode scope.
+See zg --help environment for precedence and Server-mode scope.

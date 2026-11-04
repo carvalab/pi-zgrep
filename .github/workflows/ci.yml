@@ -11,8 +11,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macOS is here because @zvec/zvec-grep ships per-platform native
+        # payloads: darwin-arm64 and darwin-x64 are two of them, and their
+        # checksum / exec-bit / spawn path is macOS-only. macos-latest is Apple
+        # Silicon; macos-15-intel is the x64 image (macos-13 is retired).
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node-version: ["22", "24", "26"]
+        # Intel macOS is the slowest runner, so it covers only one node version;
+        # that is enough to prove the darwin-x64 payload resolves and runs.
+        include:
+          - os: macos-15-intel
+            node-version: "24"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -34,9 +43,10 @@ jobs:
         env:
           ZG_TEST_MODEL: "1"
 
-  # Real pi session against openrouter/free. Skips itself when the secret is
-  # absent, so forks without it still pass. One OS is enough: the matrix
-  # above already covers Windows.
+  # Real pi session against a pinned paid OpenRouter model (a free `:free` pin
+  # answered 429 free-models-per-day instead of exercising the tool). Skips
+  # itself when the secret is absent, so forks without it still pass. One OS is
+  # enough: the matrix above already covers Windows and macOS.
   pi:
     runs-on: ubuntu-latest
     steps:
@@ -44,8 +54,37 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
-      - run: npm install -g @earendil-works/pi-coding-agent
+      # Pinned to the version in package-lock.json, not `latest`: a global
+      # install resolves its own tree, so an unpinned run once died on
+      # `ETARGET` for a transitive @aws-sdk package while the registry caught
+      # up. Bump the dev dependency to move it.
+      - name: Read the pinned pi version
+        id: pi
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/@earendil-works/pi-coding-agent'].version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - run: npm install -g "@earendil-works/pi-coding-agent@${{ steps.pi.outputs.version }}"
       - run: npm ci
       - run: npm run test:pi
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  # Which zg the extension actually runs, per user setup (`npm run test:upgrade`):
+  # the packed tarball
+  # installed with and without lifecycle scripts, an old global 0.2.2 on PATH,
+  # PI_ZG_BIN overrides (0.2.x, 0.3.x, missing), and the 0.6.0 -> 0.7.0 upgrade
+  # that has to rebuild a 0.2.x index. It installs real published versions, so
+  # it needs the npm registry, and S6 downloads a 32 MB embedding model.
+  upgrade:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run test:upgrade

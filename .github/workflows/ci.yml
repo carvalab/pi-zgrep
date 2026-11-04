@@ -67,7 +67,7 @@ jobs:
           PI_ZG_IT_MODEL: ${{ matrix.model }}
       # TEMPORARY negative proof: the script must exit 1 and name the zg error.
       - name: Negative proof (must fail, extension-side)
-        if: matrix.model == 'google/gemma-4-31b-it:free'
+        if: matrix.model == 'nvidia/nemotron-3-ultra-550b-a55b:free'
         run: |
           set +e
           node tools/pi-integration.mjs > "$RUNNER_TEMP/negative.log" 2>&1

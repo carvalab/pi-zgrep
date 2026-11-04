@@ -7,9 +7,14 @@
 // this package's extension and skill loaded; the session .jsonl is then read
 // for the first search-like tool call, which is what "routing" means here.
 //
-// A run needs a real provider. With OPENROUTER_API_KEY (from ../.env or the
-// environment) the reference condition is `--model openrouter/free`; any other
-// configured provider works the same way via --model provider/id.
+// The gate judges only the sessions that searched at all: a model that answers
+// a concept question from memory never reached the choice, so it leaves the
+// denominator (its share is the no-tool rate, reported and not gated) instead of
+// scoring as a routing failure. Too few searchers to judge is INCONCLUSIVE.
+//
+// A run needs a real provider: with OPENROUTER_API_KEY (from ../.env or the
+// environment) an `openrouter/*` model works, and any provider already logged
+// in works the same way via --model provider/id plus --agent-from.
 //
 // Workspace: a shallow clone of expressjs/express in $ZG_BENCH (default
 // ~/.cache/zg-bench), pre-indexed by the bundled zg 0.3.0 with
@@ -24,6 +29,7 @@
 //   node tools/routing-eval.mjs --only holdout                   # held-out set
 //   node tools/routing-eval.mjs --model zai/glm-5.3-flash --agent-from ~/.pi/agent
 //   node tools/routing-eval.mjs --json out.json                  # CI-readable result file
+//   node tools/routing-eval.mjs --subset concept,holdout --threshold 80  # CI gate
 //
 // One cheap, tool-capable model is pinned in PINNED_MODEL. Do not use
 // openrouter/free here: that alias answers with a different model per request,
@@ -148,6 +154,7 @@ const parseArgs = (argv) => {
     only: null,
     out: null,
     repeat: 3,
+    threshold: null,
     models: [],
     timeout: 240_000,
   };
@@ -162,8 +169,10 @@ const parseArgs = (argv) => {
       o.concurrency = Number(next());
     } else if (a === "--guidance") {
       o.guidance = next();
-    } else if (a === "--only") {
+    } else if (a === "--only" || a === "--subset") {
       o.only = next();
+    } else if (a === "--threshold") {
+      o.threshold = Number(next());
     } else if (a === "--json" || a === "--out") {
       o.out = next();
     } else if (a === "--env-file") {
@@ -174,7 +183,7 @@ const parseArgs = (argv) => {
       o.timeout = Number(next());
     } else if (a === "--help" || a === "-h") {
       console.log(
-        "node tools/routing-eval.mjs [--model provider/id] [--runs 3] [--guidance 1|0|both] [--only concept|exact|control|holdout|c1,e2] [--json file.json] [--env-file path] [--agent-from dir] [--concurrency 4] [--timeout ms]"
+        "node tools/routing-eval.mjs [--model provider/id] [--runs 3] [--guidance 1|0|both] [--subset concept,holdout] [--threshold 80] [--json file.json] [--env-file path] [--agent-from dir] [--concurrency 4] [--timeout ms]"
       );
       process.exit(0);
     } else {
@@ -428,13 +437,17 @@ const runOne = async ({ model, prompt, condition, repeat }) => {
 
 // --- matrix ------------------------------------------------------------------
 
-const pick = () =>
-  PROMPTS.filter((p) => {
-    if (!opts.only) {
-      return true;
-    }
-    return opts.only.split(",").includes(p.id) || opts.only === p.category;
-  });
+const pick = () => {
+  if (!opts.only) {
+    return PROMPTS;
+  }
+  // A comma list, as CI passes it (`concept,holdout`): each entry is a category
+  // name or a prompt id, so `--subset holdout` and `--subset c1,e2` both work.
+  const wanted = opts.only.split(",").map((s) => s.trim());
+  return PROMPTS.filter(
+    (p) => wanted.includes(p.id) || wanted.includes(p.category)
+  );
+};
 
 const conditions =
   opts.guidance === "both"
@@ -451,6 +464,14 @@ for (const model of opts.models) {
       }
     }
   }
+}
+if (jobs.length === 0) {
+  // A subset that matches nothing would otherwise spend a key on zero sessions
+  // and report INCONCLUSIVE, which reads like a provider flake.
+  console.error(
+    `--subset "${opts.only ?? ""}" matched no prompts; known categories: ${[...new Set(PROMPTS.map((p) => p.category))].join(", ")}, plus any prompt id`
+  );
+  process.exit(2);
 }
 console.log(
   `${jobs.length} runs: ${opts.models.length} model(s) x ${conditions.join("+")} x ${opts.repeat} repeat(s), concurrency ${opts.concurrency}`
@@ -508,12 +529,22 @@ await Promise.all(
 
 const categories = [...new Set(pick().map((p) => p.category))];
 const categoryOf = (id) => pick().find((p) => p.id === id)?.category;
+// A row with `kind: null` never made a search-like call: `rate` drops it from
+// both numerator and denominator, `noToolRate` counts it.
 const rate = (rows) => {
+  const searchers = rows.filter((r) => r.kind !== null);
+  if (searchers.length === 0) {
+    return "n/a";
+  }
+  const zgFirst = searchers.filter((r) => r.kind === "zg").length;
+  return `${((zgFirst / searchers.length) * 100).toFixed(0)}% (${zgFirst}/${searchers.length})`;
+};
+const noToolRate = (rows) => {
   if (rows.length === 0) {
     return "n/a";
   }
-  const zgFirst = rows.filter((r) => r.kind === "zg").length;
-  return `${((zgFirst / rows.length) * 100).toFixed(0)}% (${zgFirst}/${rows.length})`;
+  const none = rows.filter((r) => r.kind === null).length;
+  return `${((none / rows.length) * 100).toFixed(0)}% (${none}/${rows.length})`;
 };
 const rowsFor = (model, condition, category) =>
   results.filter(
@@ -524,14 +555,20 @@ const rowsFor = (model, condition, category) =>
   );
 
 for (const model of opts.models) {
-  console.log(`\n${model} — first search-like tool, by category`);
+  console.log(
+    `\n${model} — zg-first among the sessions that searched, plus the no-tool share`
+  );
   const table = [];
   for (const category of [...categories, "all"]) {
     const row = { category };
     for (const condition of conditions) {
-      row[condition] = rate(
-        rowsFor(model, condition, category === "all" ? undefined : category)
+      const rows = rowsFor(
+        model,
+        condition,
+        category === "all" ? undefined : category
       );
+      row[condition] = rate(rows);
+      row[`${condition} no-tool`] = noToolRate(rows);
     }
     table.push(row);
   }
@@ -566,3 +603,148 @@ if (failures.length > 0) {
 persist();
 console.log(`results written to ${out}`);
 console.log(`session transcripts kept in ${scratch}`);
+
+// --- verdict (CI gate) -------------------------------------------------------
+
+// Two exit behaviours, mirroring the pi integration job: a threshold breach or
+// a session that failed inside this extension is a real failure (1). A provider
+// that rate-limits, times out or 5xxs produces no routing observation at all, so
+// those rows leave the denominator; so does a session that never searched (the
+// no-tool rate, reported but not gated). Fewer than MIN_SEARCHERS searchers, or
+// none at all, is INCONCLUSIVE (0, reason in the step summary), not a red build.
+// Without --threshold this block only reports and the script exits as it did.
+const OUR_CODE = /(?:pi-zgrep|src[/\\]index\.ts|skills[/\\])/u;
+
+const unusableReason = (row) => {
+  if (row.exit === 0) {
+    return null;
+  }
+  return OUR_CODE.test(row.stderr ?? "") ? "extension" : "provider";
+};
+
+const validRows = results.filter((row) => unusableReason(row) === null);
+const extensionFailures = results.filter(
+  (row) => unusableReason(row) === "extension"
+);
+const providerFlakes = results.filter(
+  (row) => unusableReason(row) === "provider"
+);
+
+// The gate: concept + holdout — the prompts where a search is expected — on the
+// shipped `guidance` condition when both conditions ran. A subset with neither
+// (say `--subset exact`) gates on whatever it selected.
+const gateCondition = conditions.includes("guidance")
+  ? "guidance"
+  : conditions[0];
+const GATE_CATEGORIES = ["concept", "holdout"];
+const gateCategories = GATE_CATEGORIES.filter((c) => categories.includes(c));
+const gateSet = gateCategories.length > 0 ? gateCategories : categories;
+const gateRows = validRows.filter(
+  (row) =>
+    row.condition === gateCondition && gateSet.includes(categoryOf(row.prompt))
+);
+// Only sessions that made a search-like call are judged: picking grep, find or
+// read over zg is a routing failure; answering from memory never saw the choice.
+const searchers = gateRows.filter((row) => row.kind !== null);
+const zgFirst = searchers.filter((row) => row.kind === "zg").length;
+const noTool = gateRows.length - searchers.length;
+const pct = searchers.length === 0 ? null : (zgFirst / searchers.length) * 100;
+// Two searchers that both chose zg are not 100% of anything: under this many the
+// share is noise, so the gate reports INCONCLUSIVE rather than pass or fail.
+const MIN_SEARCHERS = 4;
+const threshold = opts.threshold;
+
+const decide = () => {
+  if (threshold === null) {
+    return {
+      code: 0,
+      kind: "REPORT",
+      reason: "no --threshold, reporting only",
+    };
+  }
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+    return {
+      code: 2,
+      kind: "ERROR",
+      reason: `--threshold must be 0..100 (got ${threshold})`,
+    };
+  }
+  if (extensionFailures.length > 0) {
+    const first = extensionFailures[0];
+    return {
+      code: 1,
+      kind: "FAIL",
+      reason: `${extensionFailures.length} session(s) failed inside the extension: ${(first.stderr ?? "no stderr").slice(-300)}`,
+    };
+  }
+  const noToolNote = `${noTool}/${gateRows.length} session(s) answered without a search tool`;
+  if (searchers.length < MIN_SEARCHERS) {
+    const flakes =
+      providerFlakes.length > 0
+        ? `, ${providerFlakes.length} provider flake(s)`
+        : "";
+    return {
+      code: 0,
+      kind: "INCONCLUSIVE",
+      reason: `only ${searchers.length} searching session(s) of ${gateRows.length}, need ${MIN_SEARCHERS} to score routing: ${noToolNote}${flakes}`,
+    };
+  }
+  const label = `${gateSet.join("+")} zg-first among searchers ${pct.toFixed(0)}% (${zgFirst}/${searchers.length}), ${noToolNote}`;
+  if (pct < threshold) {
+    return {
+      code: 1,
+      kind: "FAIL",
+      reason: `${label} — below the ${threshold}% threshold`,
+    };
+  }
+  return {
+    code: 0,
+    kind: "PASS",
+    reason: `${label} — meets the ${threshold}% threshold`,
+  };
+};
+const verdict = decide();
+
+// Markdown for $GITHUB_STEP_SUMMARY. Same rows as `console.table` above, minus
+// the ones that produced no observation; the rate format is `rate`'s.
+const mdRows = (condition, category) =>
+  validRows.filter(
+    (row) =>
+      row.condition === condition &&
+      (category === null || categoryOf(row.prompt) === category)
+  );
+
+const lines = [
+  `### Routing eval — ${verdict.kind}`,
+  "",
+  verdict.reason,
+  "",
+  `\`${opts.models.join(", ")}\` · subset \`${opts.only ?? "all"}\` · ${opts.repeat} run(s) · ${conditions.join("+")}${providerFlakes.length > 0 ? ` · ${providerFlakes.length} provider flake(s) excluded` : ""}`,
+  "",
+  `| category | ${conditions.flatMap((condition) => [`${condition} zg-first`, `${condition} no-tool`]).join(" | ")} |`,
+  `| --- | ${conditions.flatMap(() => ["---", "---"]).join(" | ")} |`,
+];
+for (const category of [...categories, "all"]) {
+  const cells = conditions.flatMap((condition) => {
+    const rows = mdRows(condition, category === "all" ? null : category);
+    return [rate(rows), noToolRate(rows)];
+  });
+  lines.push(`| ${category} | ${cells.join(" | ")} |`);
+}
+lines.push(
+  "",
+  `Threshold: ${threshold === null ? "not enforced" : `${threshold}% on ${gateSet.join("+")} (${gateCondition}), at least ${MIN_SEARCHERS} searching sessions`}`,
+  "",
+  "A session that answers from memory never chose a tool, so it leaves the denominator: its share is the no-tool column, reported but not gated."
+);
+
+console.log(`\nverdict: ${verdict.kind} — ${verdict.reason}`);
+if (process.env.GITHUB_STEP_SUMMARY) {
+  writeFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`, {
+    flag: "a",
+  });
+}
+// Keep the verdict in the JSON so an uploaded artifact answers "why red?".
+const artifact = JSON.parse(readFileSync(out, "utf-8"));
+writeFileSync(out, JSON.stringify({ ...artifact, verdict }, null, 2));
+process.exitCode = verdict.code;

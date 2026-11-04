@@ -61,23 +61,32 @@ The engine, [zvec-grep](https://github.com/zvec-ai/zvec-grep) 0.3.0 (Apache-2.0,
 
 1. `PI_ZG_BIN`, when set, is **exclusive**. It is the only candidate; if it is missing, not executable, the unmaterialized install stub, or older than 0.3.0, you get one error naming the variable, the path and the version found. There is no fallback.
 2. Otherwise the bundled platform package: `@zvec/zvec-grep-<os>-<arch>[-<libc>]` selected through `platforms.json`, with its `bin/zg` verified against the shipped `checksums.json` (byte length plus sha256) before anything is spawned.
-3. Otherwise a materialized `@zvec/zvec-grep/bin/zg.exe` — but only when it really is a native executable (ELF/PE/Mach-O magic). The placeholder stub is rejected by name.
-4. Otherwise `zg` on PATH, gated on `zg --version`: anything below 0.3.0 is skipped and named in the error (`no usable zg binary: <path> (0.2.1 — zg 0.3.0 or newer is required)`) instead of being handed flags it would read as search text.
+3. Otherwise `zg` on PATH, gated on `zg --version`. Anything below 0.3.0 is skipped and named in the error (`no usable zg binary: <path> (0.2.1 — zg 0.3.0 or newer is required)`) instead of being handed flags it would read as search text.
+
+Step 2 also covers a materialized `@zvec/zvec-grep/bin/zg.exe`, but only when it really is a native executable (ELF/PE/Mach-O magic); the placeholder stub is rejected by name.
+
+A global `npm install -g @zvec/zvec-grep` is only ever reached through step 3, so the bundled engine still wins while it resolves and the global copy is ignored. To run your own build, point `PI_ZG_BIN` at it: that binary is then the only one used, and a broken path is one error, not a fallback.
 
 pi-zgrep itself is an integrator: the search logic lives upstream, and this package translates a pi tool call into `zg` argv and parses the output.
 
-### Already have zg installed?
+### How updates reach you
 
-| situation | what happens |
+pi installs packages with plain `npm install`. A personal install lands in the agent dir's `npm` folder — `~/.pi/agent/npm`, or `$PI_CODING_AGENT_DIR/npm` when that variable is set — and the engine sits there as an ordinary dependency.
+
+pi does not update packages on its own. At startup it installs only what is missing or no longer matches the configured range, and its check for newer versions only shows a notice; nothing is installed from it. `pi update --extensions` (or `pi update npm:pi-zgrep`) is the command that runs `npm install pi-zgrep@latest` in that folder.
+
+That install is narrow. npm keeps the `@zvec/zvec-grep` version already in the lockfile for as long as it satisfies the range this package declares, which is `^0.3.0`. A new zg 0.3.x therefore reaches you when a pi-zgrep release raises that floor; `pi update --extensions` alone will not move the engine. To move it now, install it into the same folder, or run your own build.
+
+| I want to | run |
 | --- | --- |
-| bundled engine only, no `zg` on PATH | bundled 0.3.0 runs; index plus all four routes work |
-| bundled + a `zg` 0.2.1 first on PATH | bundled 0.3.0 wins; the 0.2.1 binary is never executed |
-| bundled + a `zg` 0.3.0 first on PATH | bundled still wins (preference order); the PATH copy is used only when no platform package resolves |
-| `PI_ZG_BIN` → 0.3.0 | that path only; bundled and PATH are never probed |
-| `PI_ZG_BIN` → 0.2.1, missing, or the install stub | the tool returns `PI_ZG_BIN=<path> is set but zg is not usable there…` plus the per-candidate reason; no fallback, no index written |
-| optional dependencies omitted | no binary at all; the resolver names the missing platform package and the tool error appends the reinstall hint |
+| update pi-zgrep | `pi update --extensions` |
+| update one package | `pi update npm:pi-zgrep` |
+| move the engine now | `npm install @zvec/zvec-grep@latest --prefix ~/.pi/agent/npm` |
+| run my own zg build | `export PI_ZG_BIN=/path/to/zg` |
 
-Upgrading from 0.2.x needs no action. A 0.2.x `.zvec-grep` directory has no manifest for the current index schema, so `--status --check-ready` exits 1 and reports `Unavailable (rebuild required)`; the first index, warmup or tool call then rebuilds once with `--index --rebuild`. A leftover 0.2.x daemon records no `daemonProtocolVersion`, so the first session's `zg --server on` replaces it in place — or run `/zg-server on` to do it immediately.
+### Upgrading from 0.6
+
+No action needed. An index built by zg 0.2.x has no manifest for the 0.3.0 index schema, so `--status --check-ready` exits 1 and reports `Unavailable (rebuild required)`; the first index, warmup or tool call then rebuilds it once with `--index --rebuild`. A leftover 0.2.x daemon records no `daemonProtocolVersion`, so the first session's `zg --server on` replaces it in place — or run `/zg-server on` to do it immediately.
 
 On a workspace's first build the extension names the model for you (unless you pass `--embedding` yourself): `ZVEC_GREP_EMBEDDING` when set, else `PI_ZG_EMBEDDING`, else `local/potion-code-16m-v2`, local and code-tuned, downloaded once into the model cache (an offline first build fails). Existing indexes keep the model they were built with. A `--rebuild`, including the one-time 0.2.x rebuild, names no model, so zg picks it from `ZVEC_GREP_EMBEDDING`, its own config, or its default; `PI_ZG_EMBEDDING` does not apply there.
 

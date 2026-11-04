@@ -181,23 +181,28 @@ export const assertZgHit = (entries, context = "") => {
 
 // --- Models ------------------------------------------------------------------
 // Pinned so the run depends on a model that advertises tool calling and on the
-// reasoning level that model needs, not on whatever openrouter/free picks. Both
-// pins list tools, tool_choice and reasoning in OpenRouter's catalog
+// reasoning level that model needs, not on whatever a router picks. Both pins
+// list tools, tool_choice and reasoning in OpenRouter's catalog
 // (https://openrouter.ai/api/v1/models), so a reasoning request is valid for
 // them and no endpoint can answer "Reasoning is mandatory".
 //
+// Both are paid and cheap. A :free primary was tried and dropped: free models
+// allow 50 requests/day for this account, so CI spent its quota and answered
+// "429 Rate limit exceeded: free-models-per-day" instead of exercising the pin.
+//
 // Evidence, one session per model against the installed package (2026-11-04):
-// nvidia/nemotron-3-ultra-550b-a55b:free called zg and hit hello.ts on the first
-// attempt; openai/gpt-oss-120b did the same; google/gemma-4-31b-it:free answered
-// 429 "temporarily rate-limited upstream" on its free endpoint (Google AI Studio)
-// and only got there through the fallback, so it is not the primary.
+// openai/gpt-oss-20b and openai/gpt-oss-120b both called zg and hit hello.ts;
+// nvidia/nemotron-3-ultra-550b-a55b:free did the same until the daily cap, and
+// google/gemma-4-31b-it:free answered 429 "temporarily rate-limited upstream".
 export const MODELS = {
-  // Free, 1M context, tools + tool_choice + reasoning, five upstream providers.
-  primary:
-    process.env.PI_ZG_IT_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free",
-  // Cheapest paid model with tools and reasoning ($0.022/M prompt tokens), with a
-  // wide provider pool, so a fallback run costs a fraction of a cent. It also runs
-  // the negative proof: a throttled free endpoint would mask the engine failure.
+  // $0.05/M prompt, $0.20/M completion, tools + tool_choice + reasoning, and a
+  // paid endpoint: the free tier is capped at 50 requests/day for this account,
+  // so a :free pin spends most of CI on "429 free-models-per-day" and never
+  // touches the model the job is supposed to exercise.
+  primary: process.env.PI_ZG_IT_MODEL || "openai/gpt-oss-20b",
+  // $0.022/M prompt tokens, widely served, and already proven to call zg: the one
+  // retry after a provider-side failure costs a fraction of a cent. It also runs
+  // the negative proof, where a throttled endpoint would mask the engine failure.
   backup: process.env.PI_ZG_IT_BACKUP_MODEL || "openai/gpt-oss-120b",
 };
 
@@ -205,7 +210,7 @@ export const MODELS = {
 // OpenRouter endpoints; asking for reasoning explicitly is what keeps the request
 // valid where an endpoint refuses a non-reasoning call.
 export const THINKING = {
-  "nvidia/nemotron-3-ultra-550b-a55b:free": "high",
+  "openai/gpt-oss-20b": "high",
   "openai/gpt-oss-120b": "high",
 };
 
@@ -516,6 +521,13 @@ const main = () => {
           ],
           1,
           "",
+          "provider",
+        ],
+        [
+          "429 free-models-per-day in output",
+          [promptEntry],
+          1,
+          '{"message":"Rate limit exceeded: free-models-per-day. Add 5 credits to unlock 1000 free model requests per day","code":429}',
           "provider",
         ],
         [

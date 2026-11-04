@@ -18,7 +18,7 @@ All four commands must pass before you open a PR:
 npm run lint && npm run format:check && npm run typecheck && npm run test
 ```
 
-CI runs the same set on Ubuntu and Windows, Node 22, 24, and 26, then the embedding-model load test (`test/model-load.test.ts`, gated on `ZG_TEST_MODEL=1`). A separate job runs `npm run test:pi`, a real pi session against a pinned free OpenRouter model (`PI_ZG_IT_MODEL` overrides it), and skips it when `OPENROUTER_API_KEY` is unset.
+CI runs the same set on Ubuntu and Windows, Node 22, 24, and 26, then the embedding-model load test (`test/model-load.test.ts`, gated on `ZG_TEST_MODEL=1`). A separate job runs `npm run test:pi`, a real pi session against a pinned cheap paid OpenRouter model (`PI_ZG_IT_MODEL` overrides it), and skips it when `OPENROUTER_API_KEY` is unset.
 
 ## Tests
 

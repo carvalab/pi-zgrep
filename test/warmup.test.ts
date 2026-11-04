@@ -58,12 +58,12 @@ const withTempDir = async (
   try {
     await fn(dir);
   } finally {
-    // Windows keeps a handle on the dir while the fake zg the test spawned is
-    // still exiting (EBUSY). The assertions already ran above, so retrying the
-    // cleanup for a moment is right; it must not turn into a red test.
+    // A warmup child killed by an abort releases this directory as its cwd a
+    // moment later. POSIX tolerates deleting it underneath the dying child;
+    // Windows answers EPERM, so retry instead of failing the test in teardown.
     rmSync(dir, {
       force: true,
-      maxRetries: 20,
+      maxRetries: 5,
       recursive: true,
       retryDelay: 100,
     });
@@ -337,22 +337,22 @@ test("abort mid-build kills the build and stops every later ui call", async () =
   });
 });
 
-const captureSessionHandlers = (): Map<
-  string,
-  ((e: unknown, c: unknown) => void)[]
-> => {
+const captureSessionHandlers = (): {
+  handlers: Map<string, ((e: unknown, c: unknown) => void)[]>;
+  whenIdle: () => Promise<void>;
+} => {
   const handlers = new Map<string, ((e: unknown, c: unknown) => void)[]>();
-  registerSessionWarmup({
+  const { whenIdle } = registerSessionWarmup({
     on: (event: string, handler: (e: unknown, c: unknown) => void): void => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
   } as unknown as Parameters<typeof registerSessionWarmup>[0]);
-  return handlers;
+  return { handlers, whenIdle };
 };
 
 test("session_start aborts the previous warmup, session_shutdown the next", async () => {
   await withTempDir(async (dir) => {
-    const handlers = captureSessionHandlers();
+    const { handlers, whenIdle } = captureSessionHandlers();
     const start = handlers.get("session_start")?.[0];
     const shutdown = handlers.get("session_shutdown")?.[0];
     assert.ok(start, "registerSessionWarmup must handle session_start");
@@ -395,6 +395,10 @@ test("session_start aborts the previous warmup, session_shutdown the next", asyn
         liveSettled,
         "session_shutdown must abort the running warmup"
       );
+      // Aborting only signals the kills: wait for the children the aborted
+      // warmups left behind before the teardown deletes their cwd. On
+      // Windows a live child holding the workspace turns that rm into EPERM.
+      await whenIdle();
     } finally {
       if (previousBin === undefined) {
         delete process.env.PI_ZG_BIN;

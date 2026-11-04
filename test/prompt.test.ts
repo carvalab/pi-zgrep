@@ -195,5 +195,8 @@ test("PI_ZG_GUIDANCE opt-out drops the guidelines but keeps the tool", async () 
   assert.ok(
     section(optedOut.prompt, "tools").includes(`- zg: ${PROMPT_SNIPPET}`)
   );
-  assert.ok(optedOutRules.includes("Be concise in your responses"));
+  // Control: the rules section is still populated, so the absences above are
+  // opt-out and not an empty section. Structural on purpose — asserting pi's own
+  // default wording would fail the suite on a harmless pi reword.
+  assert.ok(bullets(optedOutRules).length > 0, "rules section is empty");
 });

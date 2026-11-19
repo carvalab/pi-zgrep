@@ -58,7 +58,7 @@
     "test:upgrade": "node tools/upgrade-matrix.mjs"
   },
   "dependencies": {
-    "@zvec/zvec-grep": "^0.3.0",
+    "@zvec/zvec-grep": "^0.3.1",
     "cross-spawn": "^7.0.6"
   },
   "devDependencies": {
